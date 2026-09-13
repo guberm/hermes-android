@@ -257,7 +257,13 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 val text = payload.optionalString("text", "content")
                 _state.update { current ->
                     val index = current.messages.indexOfLast { it.role == "assistant" && it.isStreaming }
-                    if (index < 0) current.copy(isSending = false)
+                    if (index < 0) {
+                        if (text.isBlank()) current.copy(isSending = false)
+                        else current.copy(
+                            isSending = false,
+                            messages = current.messages + ChatMessage("complete-${UUID.randomUUID()}", "assistant", text),
+                        )
+                    }
                     else current.copy(
                         isSending = false,
                         messages = current.messages.toMutableList().also { list ->
@@ -347,7 +353,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private fun showError(message: String) = _state.update { it.copy(status = ConnectionStatus.ERROR, statusText = message.take(220)) }
 
     override fun onCleared() {
-        gateway.close()
+        gateway.shutdown()
         super.onCleared()
     }
 }

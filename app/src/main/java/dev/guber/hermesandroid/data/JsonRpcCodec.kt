@@ -6,6 +6,8 @@ import org.json.JSONObject
 class NewlineJsonRpcDecoder {
     private val buffer = StringBuilder()
 
+    fun reset() = buffer.clear()
+
     fun feed(frame: String): List<JSONObject> {
         buffer.append(frame)
         val result = mutableListOf<JSONObject>()

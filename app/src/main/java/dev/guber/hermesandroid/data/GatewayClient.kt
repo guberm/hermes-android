@@ -76,7 +76,13 @@ class GatewayClient(
         socket?.close(1000, "Client closed")
         socket = null
         pending.clear()
+        decoder.reset()
         listener?.onStatus(ConnectionStatus.DISCONNECTED)
+    }
+
+    fun shutdown() {
+        close()
+        heartbeatExecutor.shutdownNow()
     }
 
     fun setActiveSession(sessionId: String?) {
