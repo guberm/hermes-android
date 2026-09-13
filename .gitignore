@@ -1,0 +1,24 @@
+# Gradle and local Android state
+.gradle/
+local.properties
+.idea/
+*.iml
+build/
+app/build/
+
+# Signing material and secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+.env
+*.env.*
+
+# Generated deliverables
+*.apk
+*.aab
+release/
+
+# OS/editor
+.DS_Store
+*.swp
