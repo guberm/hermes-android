@@ -3,10 +3,19 @@ package dev.guber.hermesandroid
 import dev.guber.hermesandroid.data.GatewayEndpoint
 import dev.guber.hermesandroid.data.GatewayClient
 import dev.guber.hermesandroid.data.GatewayGenerationGate
+import dev.guber.hermesandroid.data.GatewayTicketProvider
 import dev.guber.hermesandroid.data.NewlineJsonRpcDecoder
 import dev.guber.hermesandroid.data.ReconnectPolicy
+import dev.guber.hermesandroid.data.SessionIdentity
 import dev.guber.hermesandroid.data.SequencedEventGate
 import dev.guber.hermesandroid.data.jsonRpcRequest
+import kotlinx.coroutines.runBlocking
+import okio.ByteString
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -90,6 +99,85 @@ class GatewayProtocolTest {
     }
 
     @Test
+    fun reconnectResumesDurableSessionAndGatesReplayAgainstLiveEvents() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(
+            ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") },
+            webSocketFactory = factory,
+        )
+        val ready = mutableListOf<SessionIdentity>()
+        val events = mutableListOf<JSONObject>()
+        val restoredApprovals = mutableListOf<dev.guber.hermesandroid.data.ApprovalRequest>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onSessionReady(session: SessionIdentity, messages: List<dev.guber.hermesandroid.data.ChatMessage>) {
+                ready += session
+            }
+
+            override fun onEvent(params: JSONObject) {
+                events += params
+            }
+
+            override fun onPendingApprovals(approvals: List<dev.guber.hermesandroid.data.ApprovalRequest>) {
+                restoredApprovals += approvals
+            }
+        }
+        client.setActiveSession(SessionIdentity("stored-1", "runtime-old"))
+        val endpoint = GatewayEndpoint.parse("https://gateway.example").getOrThrow()
+        val auth = dev.guber.hermesandroid.data.AuthSession("access", "refresh", 0)
+
+        assertTrue(client.connect(endpoint, auth).isSuccess)
+        val socket = factory.sockets.single()
+        socket.open()
+        socket.deliver("{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"gateway.ready\",\"payload\":{\"replay_epoch\":\"epoch-1\"}}}")
+
+        val resume = socket.sentRequest("session.resume")
+        assertEquals("stored-1", resume.getJSONObject("params").getString("session_id"))
+        socket.deliver("{\"jsonrpc\":\"2.0\",\"id\":${resume.getLong("id")},\"result\":{\"session_id\":\"runtime-new\",\"session_key\":\"stored-1\",\"messages\":[]}}")
+        assertEquals("stored-1", ready.single().storedSessionId)
+        assertEquals("runtime-new", ready.single().runtimeSessionId)
+
+        val pending = socket.sentRequest("approval.pending")
+        assertEquals("runtime-new", pending.getJSONObject("params").getString("session_id"))
+        socket.deliver("{\"jsonrpc\":\"2.0\",\"id\":${pending.getLong("id")},\"result\":{\"pending\":{\"request_id\":\"approval-1\",\"command\":\"run checks\",\"choices\":[\"once\",\"deny\"]}}}")
+        assertEquals("approval-1", restoredApprovals.single().requestId)
+
+        val replay = socket.sentRequest("session.events.since")
+        socket.deliver("{\"jsonrpc\":\"2.0\",\"id\":${replay.getLong("id")},\"result\":{\"events\":[{\"type\":\"message.delta\",\"session_id\":\"runtime-new\",\"seq\":4}]}}")
+        socket.deliver("{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"message.delta\",\"session_id\":\"runtime-new\",\"seq\":4}}")
+        assertEquals(1, events.size)
+        assertTrue(events.single().getBoolean("replayed"))
+        client.shutdown()
+    }
+
+    @Test
+    fun callbacksFromAnOldSocketGenerationCannotDispatchIntoTheNewSocket() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(
+            ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") },
+            webSocketFactory = factory,
+        )
+        val events = mutableListOf<JSONObject>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onEvent(params: JSONObject) {
+                events += params
+            }
+        }
+        val endpoint = GatewayEndpoint.parse("https://gateway.example").getOrThrow()
+        val auth = dev.guber.hermesandroid.data.AuthSession("access", "refresh", 0)
+        client.connect(endpoint, auth)
+        val first = factory.sockets[0]
+        first.open()
+        client.connect(endpoint, auth)
+        val second = factory.sockets[1]
+        second.open()
+        val stale = "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"message.delta\",\"session_id\":\"runtime\",\"seq\":1}}"
+        first.deliver(stale)
+        second.deliver(stale)
+        assertEquals(1, events.size)
+        client.shutdown()
+    }
+
+    @Test
     fun oldWebSocketGenerationIsRejectedAfterReconnect() {
         val generations = GatewayGenerationGate()
         val first = generations.begin()
@@ -120,4 +208,36 @@ class GatewayProtocolTest {
         assertEquals(7, request.getInt("id"))
         assertEquals("stored-1", request.getJSONObject("params").getString("session_id"))
     }
+}
+
+private class RecordingWebSocketFactory : WebSocket.Factory {
+    val sockets = mutableListOf<RecordingWebSocket>()
+
+    override fun newWebSocket(request: Request, listener: WebSocketListener): WebSocket {
+        return RecordingWebSocket(request, listener).also(sockets::add)
+    }
+}
+
+private class RecordingWebSocket(
+    private val requestValue: Request,
+    private val listener: WebSocketListener,
+) : WebSocket {
+    val sent = mutableListOf<String>()
+
+    override fun request(): Request = requestValue
+    override fun queueSize(): Long = 0
+    override fun send(text: String): Boolean = sent.add(text)
+    override fun send(bytes: ByteString): Boolean = true
+    override fun close(code: Int, reason: String?): Boolean = true
+    override fun cancel() = Unit
+
+    fun open() {
+        listener.onOpen(this, Response.Builder().request(requestValue).protocol(Protocol.HTTP_1_1).code(101).message("Switching Protocols").build())
+    }
+
+    fun deliver(text: String) {
+        listener.onMessage(this, text)
+    }
+
+    fun sentRequest(method: String): JSONObject = sent.map(::JSONObject).first { it.getString("method") == method }
 }

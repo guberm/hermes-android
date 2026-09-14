@@ -19,6 +19,10 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
+fun interface GatewayTicketProvider {
+    suspend fun mint(endpoint: GatewayEndpoint, accessToken: String): Result<String>
+}
+
 /** Authenticated Hermes gateway transport with generation-safe reconnect and replay handling. */
 class GatewayClient(
     private val authApi: AuthApi = AuthApi(),
@@ -26,6 +30,10 @@ class GatewayClient(
         .pingInterval(20, TimeUnit.SECONDS)
         .build(),
     private val reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
+    private val ticketProvider: GatewayTicketProvider = GatewayTicketProvider { endpoint, accessToken ->
+        authApi.mintWsTicket(endpoint, accessToken)
+    },
+    private val webSocketFactory: WebSocket.Factory = http,
 ) {
     interface Listener {
         fun onStatus(status: ConnectionStatus, detail: String? = null) {}
@@ -176,7 +184,7 @@ class GatewayClient(
     }
 
     private suspend fun openTransport(endpoint: GatewayEndpoint, auth: AuthSession): Result<Unit> {
-        val ticketResult = authApi.mintWsTicket(endpoint, auth.accessToken)
+        val ticketResult = ticketProvider.mint(endpoint, auth.accessToken)
         if (ticketResult.isFailure) {
             val error = ticketResult.exceptionOrNull() ?: IllegalStateException("Unable to mint a gateway ticket")
             listener?.onStatus(ConnectionStatus.ERROR, error.message ?: "Unable to mint a gateway ticket")
@@ -196,7 +204,7 @@ class GatewayClient(
                 lastReadMillis = System.currentTimeMillis()
             }
         }
-        val webSocket = http.newWebSocket(request, socketListener(generation))
+        val webSocket = webSocketFactory.newWebSocket(request, socketListener(generation))
         synchronized(this) {
             if (generationGate.isCurrent(generation) && !manuallyClosed) socket = webSocket
             else webSocket.close(1000, "Obsolete gateway generation")

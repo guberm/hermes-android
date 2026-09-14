@@ -17,7 +17,7 @@ A native Kotlin + Jetpack Compose client for an authenticated Hermes Gateway. Th
 
 Use a Hermes Gateway with native PKCE enabled and a private HTTPS/WSS route. A non-loopback backend must have its authentication gate configured. This app does not ship `API_SERVER_KEY`, a dashboard token, or a host address. If the gateway is only an unauthenticated loopback Desktop server, configure a secure authenticated deployment first rather than weakening the app.
 
-The protocol contract used here is documented in the implementation evidence directory as `API-CONTRACT.md`.
+The protocol contract used here is documented in [`docs/evidence/API-CONTRACT.md`](docs/evidence/API-CONTRACT.md).
 
 ## Build
 
