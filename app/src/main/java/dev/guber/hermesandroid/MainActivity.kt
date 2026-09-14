@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -95,6 +96,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -228,6 +230,14 @@ private fun SetupScreen(state: HermesUiState, viewModel: HermesViewModel) {
 private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val closeDrawer: () -> Unit = {
+        focusManager.clearFocus(force = true)
+        scope.launch { drawerState.close() }
+    }
+    LaunchedEffect(drawerState.isOpen) {
+        if (!drawerState.isOpen) focusManager.clearFocus(force = true)
+    }
     var showSettings by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var showChatMenu by remember { mutableStateOf(false) }
@@ -247,12 +257,13 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
             SessionDrawer(
                 state = state,
                 onPin = viewModel::togglePin,
+                onClose = closeDrawer,
                 onNew = {
-                    scope.launch { drawerState.close() }
+                    closeDrawer()
                     viewModel.newSession()
                 },
                 onSelect = { session ->
-                    scope.launch { drawerState.close() }
+                    closeDrawer()
                     viewModel.resumeSession(session)
                 },
             )
@@ -304,6 +315,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
             )
         }
     }
+    BackHandler(enabled = drawerState.isOpen, onBack = closeDrawer)
     if (showSettings) {
         SettingsDialog(state, viewModel, onDismiss = { showSettings = false })
     }
@@ -367,7 +379,7 @@ private fun ConnectionPill(state: HermesUiState) {
 }
 
 @Composable
-private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (SessionSummary) -> Unit, onPin: (SessionSummary) -> Unit) {
+private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (SessionSummary) -> Unit, onPin: (SessionSummary) -> Unit, onClose: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     val sessions = visibleSessions(state.sessions, state.pinnedSessions, query)
     ModalDrawerSheet {
@@ -377,10 +389,11 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
                     Text("H", color = Color.White, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.width(12.dp))
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text("Hermes", fontWeight = FontWeight.Bold)
                     Text("Sessions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close sessions") }
             }
             Spacer(Modifier.height(20.dp))
             Button(
