@@ -59,6 +59,7 @@ data class HermesUiState(
     val models: List<GatewayModel> = emptyList(),
     val currentModel: String = "",
     val currentProvider: String = "",
+    val currentReasoning: String = "",
     val loadingModels: Boolean = false,
     val changingModel: Boolean = false,
     val modelConfirmation: String? = null,
@@ -110,6 +111,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private val replies = ReplyTracker()
     private val notifications = ReplyNotifications(application)
     private var pendingModel: GatewayModel? = null
+    private var pendingReasoning: String? = null
     private var pendingOpenSession: String? = null
     private var manuallyDisconnected = false
     init {
@@ -233,14 +235,22 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         gateway.selectModel(runtime, model, confirmed)
     }
 
+    fun selectReasoning(level: String) {
+        val runtime = _state.value.activeRuntimeSessionId ?: return
+        if (_state.value.isSending) return
+        pendingReasoning = level
+        _state.update { it.copy(changingModel = true, modelError = null) }
+        gateway.selectReasoning(runtime, level)
+    }
+
     fun confirmModel() { pendingModel?.let { selectModel(it, true) } }
     fun cancelModelConfirmation() {
         pendingModel = null
         _state.update { it.copy(modelConfirmation = null, changingModel = false) }
     }
 
-    override fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String) {
-        _state.update { it.copy(models = models, currentModel = currentModel, currentProvider = currentProvider, loadingModels = false) }
+    override fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String, currentReasoning: String) {
+        _state.update { it.copy(models = models, currentModel = currentModel, currentProvider = currentProvider, currentReasoning = currentReasoning, loadingModels = false) }
     }
 
     override fun onModelChanged(model: String, confirmation: String?) {
@@ -254,8 +264,19 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         gateway.requestModels(_state.value.activeRuntimeSessionId)
     }
 
-    override fun onSessionModel(model: String, provider: String) {
-        _state.update { it.copy(currentModel = model.ifBlank { it.currentModel }, currentProvider = provider.ifBlank { it.currentProvider }) }
+    override fun onReasoningChanged(level: String) {
+        _state.update { it.copy(currentReasoning = level.ifBlank { pendingReasoning ?: it.currentReasoning }, changingModel = false, statusText = "Reasoning changed") }
+        pendingReasoning = null
+    }
+
+    override fun onSessionModel(model: String, provider: String, reasoning: String) {
+        _state.update {
+            it.copy(
+                currentModel = model.ifBlank { it.currentModel },
+                currentProvider = provider.ifBlank { it.currentProvider },
+                currentReasoning = reasoning.ifBlank { it.currentReasoning },
+            )
+        }
     }
 
     fun cancelBackgroundWait() {
@@ -511,7 +532,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             return
         }
         when (type) {
-            "session.info" -> onSessionModel(payload.optionalString("model"), payload.optionalString("provider"))
+            "session.info" -> onSessionModel(payload.optionalString("model"), payload.optionalString("provider"), payload.optionalString("reasoning", "reasoning_effort"))
             "message.start" -> {
                 val role = payload.optString("role", "assistant")
                 _state.update { it.copy(isSending = true, messages = it.messages + ChatMessage("stream-${UUID.randomUUID()}", role, "", true)) }

@@ -124,6 +124,10 @@ import dev.guber.hermesandroid.data.ChatMessage
 import dev.guber.hermesandroid.data.ConnectionStatus
 import dev.guber.hermesandroid.data.SessionSummary
 import dev.guber.hermesandroid.data.ToolActivity
+import dev.guber.hermesandroid.data.reasoningLevels
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.HermesViewModel
 import kotlinx.coroutines.launch
@@ -367,6 +371,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
 @Composable
 private fun ModelPicker(state: HermesUiState, viewModel: HermesViewModel, onDismiss: () -> Unit) {
     var search by remember { mutableStateOf("") }
+    var showReasoning by remember { mutableStateOf(false) }
     val models = state.models.filter { "${it.providerName} ${it.id}".contains(search, ignoreCase = true) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -374,6 +379,16 @@ private fun ModelPicker(state: HermesUiState, viewModel: HermesViewModel, onDism
         text = {
             Column {
                 Text("Current: ${state.currentModel.ifBlank { "Gateway default" }}", style = MaterialTheme.typography.bodySmall)
+                Box {
+                    OutlinedButton(onClick = { showReasoning = true }, enabled = !state.changingModel && !state.isSending) {
+                        Text("Reasoning: ${state.currentReasoning.ifBlank { "Gateway default" }}")
+                    }
+                    DropdownMenu(expanded = showReasoning, onDismissRequest = { showReasoning = false }) {
+                        reasoningLevels.forEach { level ->
+                            DropdownMenuItem(text = { Text(level) }, onClick = { showReasoning = false; viewModel.selectReasoning(level) })
+                        }
+                    }
+                }
                 OutlinedTextField(value = search, onValueChange = { search = it }, label = { Text("Search models") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
                 if (state.loadingModels || state.changingModel) CircularProgressIndicator(Modifier.size(24.dp))
@@ -560,7 +575,10 @@ private fun MessageBubble(message: ChatMessage) {
     val user = message.role.equals("user", ignoreCase = true)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 340.dp).fillMaxWidth(if (user) 0.88f else 1f)) {
-            Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                Text(messageTime(message.createdAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Box {
                 Surface(
                     color = if (user) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -583,6 +601,11 @@ private fun MessageBubble(message: ChatMessage) {
         }
     }
 }
+
+private fun messageTime(value: String): String = runCatching {
+    val instant = value.toLongOrNull()?.let { if (it < 10_000_000_000L) Instant.ofEpochSecond(it) else Instant.ofEpochMilli(it) } ?: Instant.parse(value)
+    DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(instant)
+}.getOrDefault("--:--")
 
 private fun copyText(context: Context, text: String) {
     context.getSystemService(android.content.ClipboardManager::class.java)

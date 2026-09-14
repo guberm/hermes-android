@@ -48,9 +48,10 @@ class GatewayClient(
         fun onSessionInterrupted() {}
         fun onRpcError(method: String, error: GatewayError) {}
         fun onFollowUpResult(method: String, result: JSONObject) {}
-        fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String) {}
+        fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String, currentReasoning: String) {}
         fun onModelChanged(model: String, confirmation: String?) {}
-        fun onSessionModel(model: String, provider: String) {}
+        fun onReasoningChanged(level: String) {}
+        fun onSessionModel(model: String, provider: String, reasoning: String) {}
     }
 
     companion object {
@@ -126,6 +127,10 @@ class GatewayClient(
 
     fun selectModel(runtimeSessionId: String, model: GatewayModel, confirmed: Boolean = false) {
         sendRpc("config.set", modelSelectionParams(runtimeSessionId, model, confirmed))
+    }
+
+    fun selectReasoning(runtimeSessionId: String, level: String) {
+        sendRpc("config.set", reasoningSelectionParams(runtimeSessionId, level))
     }
 
     fun createSession(title: String? = null) {
@@ -432,7 +437,9 @@ class GatewayClient(
                     activeSession = identity
                     listener?.onSessionReady(identity, parseMessages(result.optJSONArray("messages") ?: JSONArray()))
                     if (result.has("running") || method == "session.create") listener?.onSessionActivity(identity, result.optBoolean("running"))
-                    result.optJSONObject("info")?.let { listener?.onSessionModel(it.optionalString("model"), it.optionalString("provider")) }
+                    result.optJSONObject("info")?.let {
+                        listener?.onSessionModel(it.optionalString("model"), it.optionalString("provider"), it.optionalString("reasoning", "reasoning_effort"))
+                    }
                     identity.runtimeSessionId?.let {
                         requestReplay(it)
                         requestPendingApprovals(it)
@@ -440,11 +447,16 @@ class GatewayClient(
                 }
             }
             "session.interrupt" -> listener?.onSessionInterrupted()
-            "model.options" -> listener?.onModels(parseModelOptions(result), result.optionalString("model"), result.optionalString("provider"))
-            "config.set" -> if (result.optString("key") == "model") {
-                val confirmation = if (result.optBoolean("confirm_required"))
-                    result.optionalString("confirm_message", "warning").ifBlank { "Confirm this model change?" } else null
-                listener?.onModelChanged(result.optionalString("value"), confirmation)
+            "model.options" -> listener?.onModels(
+                parseModelOptions(result), result.optionalString("model"), result.optionalString("provider"), result.optionalString("reasoning", "reasoning_effort"),
+            )
+            "config.set" -> when (result.optString("key")) {
+                "model" -> {
+                    val confirmation = if (result.optBoolean("confirm_required"))
+                        result.optionalString("confirm_message", "warning").ifBlank { "Confirm this model change?" } else null
+                    listener?.onModelChanged(result.optionalString("value"), confirmation)
+                }
+                "reasoning" -> listener?.onReasoningChanged(result.optionalString("value"))
             }
             "approval.pending" -> listener?.onPendingApprovals(parsePendingApprovals(result))
             "image.attach_bytes", "file.attach" -> listener?.onAttachment(
@@ -516,7 +528,10 @@ class GatewayClient(
             val item = array.optJSONObject(index) ?: continue
             val text = contentText(item.opt("text")).ifBlank { contentText(item.opt("content")) }
             if (text.isBlank()) continue
-            add(ChatMessage(item.optionalString("id", "message_id").ifBlank { "history-$index" }, item.optString("role", "assistant"), text))
+            add(ChatMessage(
+                item.optionalString("id", "message_id").ifBlank { "history-$index" }, item.optString("role", "assistant"), text,
+                createdAt = item.optionalString("created_at", "timestamp", "time").ifBlank { java.time.Instant.now().toString() },
+            ))
         }
     }
 

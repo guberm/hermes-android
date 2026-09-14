@@ -44,6 +44,15 @@ class ModelAndReplyTest {
     }
 
     @Test
+    fun reasoningSelectionIsSessionScopedAndValidatesLevels() {
+        val params = reasoningSelectionParams("runtime-1", "high")
+        assertEquals("runtime-1", params.getString("session_id"))
+        assertEquals("reasoning", params.getString("key"))
+        assertEquals("high --session", params.getString("value"))
+        assertThrows(IllegalArgumentException::class.java) { reasoningSelectionParams("runtime-1", "maximum") }
+    }
+
+    @Test
     fun replyNotificationIsProducedOnceOnlyForRequestedTurns() {
         val tracker = ReplyTracker()
         fun event(type: String, text: String) = JSONObject().put("type", type).put("session_id", "runtime")

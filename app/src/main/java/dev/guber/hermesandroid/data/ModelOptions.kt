@@ -6,6 +6,8 @@ data class GatewayModel(val id: String, val provider: String, val providerName: 
 
 private val modelToken = Regex("[A-Za-z0-9][A-Za-z0-9_./:@+\\-]*")
 
+val reasoningLevels = listOf("none", "minimal", "low", "medium", "high", "xhigh")
+
 fun parseModelOptions(result: JSONObject): List<GatewayModel> = buildList {
     val providers = result.optJSONArray("providers") ?: return@buildList
     for (index in 0 until providers.length()) {
@@ -32,4 +34,10 @@ fun modelSelectionParams(sessionId: String, model: GatewayModel, confirmed: Bool
     return JSONObject().put("session_id", sessionId).put("key", "model")
         .put("value", "${model.id} --provider ${model.provider} --session")
         .put("confirm_expensive_model", confirmed)
+}
+
+fun reasoningSelectionParams(sessionId: String, level: String): JSONObject {
+    require(sessionId.isNotBlank()) { "Start or resume a conversation first" }
+    require(level in reasoningLevels) { "Reasoning level is unavailable" }
+    return JSONObject().put("session_id", sessionId).put("key", "reasoning").put("value", "$level --session")
 }

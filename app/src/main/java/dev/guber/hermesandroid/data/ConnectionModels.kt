@@ -2,6 +2,7 @@ package dev.guber.hermesandroid.data
 
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.time.Instant
 
 /** A validated server origin plus the routes used by the native client. */
 class GatewayEndpoint private constructor(
@@ -69,6 +70,7 @@ data class ChatMessage(
     val role: String,
     val text: String,
     val isStreaming: Boolean = false,
+    val createdAt: String = Instant.now().toString(),
 )
 
 data class ToolActivity(
