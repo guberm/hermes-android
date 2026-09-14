@@ -51,9 +51,9 @@ Use **Connection settings → Dark mode** to switch between Dark and Light. The 
 
 ## Notifications
 
-Allow notifications when Android asks, or use **Connection settings → Notification settings**. While a response started in Android is pending, a quiet **Hermes is working** notification keeps the connection active after leaving the app. Completion produces a reply notification with sound, subject to Android's channel and Do Not Disturb settings.
+Allow notifications when Android asks, or use **Connection settings → Notification settings**. Completion produces a reply notification with sound, subject to Android's channel and Do Not Disturb settings. The app deliberately does not show a persistent **Hermes is working** notification.
 
-Notifications use the authenticated Gateway connection, not a separate push backend. The app does not monitor every unrelated server conversation when stopped. Disconnecting or signing out ends the local wait without canceling server work.
+Notifications use the authenticated Gateway connection, not a separate push backend. Android may stop a background connection when the app is not active, so completion alerts are reliable while the app remains active but are not a background push guarantee. The app does not monitor every unrelated server conversation when stopped.
 
 ## Authentication and protocol
 
@@ -67,7 +67,7 @@ Notifications use the authenticated Gateway connection, not a separate push back
 - Original vector launcher mark and Material 3 interface with dark and light themes.
 - Chat history accepts the Gateway's `text` format and legacy `content` blocks; late session responses cannot replace a newer selection.
 - Searchable, server-provided model picker, with session-only changes and server-requested confirmation.
-- Reply notifications with sound and a temporary foreground service while an Android-started response is pending. Tapping a notification opens its conversation.
+- Reply notifications with sound when a tracked Android-started response completes. Tapping a notification opens its conversation.
 
 ## Backend prerequisites
 
@@ -122,7 +122,7 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
 ## Verification boundaries
 
-Version **0.1.5** passed 38 JVM tests and release lint. Its signed APK was installed on a Pixel 7 Pro and checked against a live Gateway. Device checks covered long-press message actions, theme persistence after restart, system/keyboard insets, and drawer dismissal. See [v0.1.5 device evidence](docs/evidence/DEVICE-0.1.5.md).
+Version **0.1.6** passed 38 JVM tests and release lint. Its signed APK was installed on a Pixel 7 Pro and checked against a live Gateway. Device checks covered long streaming replies, no foreground waiting service, completion alerts, themes, system/keyboard insets, and drawer dismissal. See [v0.1.6 device evidence](docs/evidence/DEVICE-0.1.6.md).
 
 Runnable checks require ADB and a signed-in app:
 

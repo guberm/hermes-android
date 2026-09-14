@@ -496,9 +496,9 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
 @Composable
 private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
-    LaunchedEffect(state.messages.size, state.tools.size, state.approvals.size) {
+    LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size) {
         val count = state.messages.size + state.tools.size + state.approvals.size
-        if (count > 0) listState.animateScrollToItem(count - 1)
+        if (count > 0) listState.scrollToItem(count - 1, Int.MAX_VALUE)
     }
     if (state.status == ConnectionStatus.ERROR && state.messages.isEmpty()) {
         Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -513,7 +513,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 16.dp, bottom = 18.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (state.messages.isEmpty() && state.tools.isEmpty()) {

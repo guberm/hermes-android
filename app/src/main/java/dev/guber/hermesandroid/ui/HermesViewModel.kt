@@ -102,9 +102,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private var pendingModel: GatewayModel? = null
     private var pendingOpenSession: String? = null
     private var manuallyDisconnected = false
-    val hasPendingReply: Boolean get() = pendingPrompt != null || pendingFollowUp != null || replies.isWaiting ||
-        _state.value.queuedPrompts.any { it.runtimeId != null && it.error == null }
-
     init {
         _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
@@ -260,13 +257,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         pendingPrompt?.let { text -> _state.update { it.copy(draft = text) } }
         pendingPrompt = null
         replies.cancel()
-        notifications.stopWaiting()
-    }
-
-    private fun startBackgroundWait() {
-        runCatching { notifications.startWaiting() }.onFailure {
-            _state.update { it.copy(statusText = "Keep Hermes open while waiting for this response") }
-        }
     }
 
     fun newSession() {
@@ -301,7 +291,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             val item = QueuedPrompt(UUID.randomUUID().toString(), current.activeSessionId ?: runtime, text, current.activeTitle, runtime)
             _state.update { it.copy(draft = "", queuedPrompts = it.queuedPrompts + item) }
             saveQueue()
-            startBackgroundWait()
             drainQueue()
             return
         }
@@ -313,7 +302,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         pendingFollowUp = sent.copy(afterMessageId = _state.value.messages.lastOrNull()?.id)
         if (sent.queued) idleSessions.remove(runtime)
         _state.update { it.copy(sendingFollowUp = true, sendingQueuedId = sent.queueId) }
-        startBackgroundWait()
         gateway.followUp(runtime, sent.text, sent.queued)
     }
 
@@ -331,7 +319,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         if (pendingFollowUp?.queueId == id) return
         _state.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { item -> item.id == id }) }
         saveQueue()
-        if (!hasPendingReply) notifications.stopWaiting()
     }
 
     fun sendQueuedNow(id: String) {
@@ -367,7 +354,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 statusText = if (accepted) (if (sent.queued) "Message ${result.optString("status")}" else "Steer accepted") else "${if (sent.queued) "Queue" else "Steer"} rejected; message kept",
                 messages = if (accepted && sameSession && sent.queued) insertSubmittedMessage(current.messages, sent.afterMessageId, sent.text) else current.messages)
         }
-        if (!hasPendingReply) notifications.stopWaiting()
         drainQueue()
     }
 
@@ -386,7 +372,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         if (runtimeSessionId == null) {
             pendingPrompt = text
             _state.update { it.copy(draft = "", isSending = true, statusText = "Creating a session…") }
-            startBackgroundWait()
             gateway.createSession()
             return
         }
@@ -398,7 +383,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             )
         }
         replies.begin(SessionIdentity(_state.value.activeSessionId ?: runtimeSessionId, runtimeSessionId), _state.value.activeTitle)
-        startBackgroundWait()
         gateway.submitPrompt(runtimeSessionId, text)
     }
 
@@ -440,7 +424,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             pendingFollowUp = null
             idleSessions.clear()
             _state.update { it.copy(sendingFollowUp = false, sendingQueuedId = null, queuedPrompts = it.queuedPrompts.map { item -> item.copy(runtimeId = null) }) }
-            if (!hasPendingReply) notifications.stopWaiting()
         }
         if (status == ConnectionStatus.ERROR) cancelBackgroundWait()
         _state.update {
@@ -504,7 +487,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     override fun onEvent(params: JSONObject) {
         replies.receive(params)?.let { reply ->
             notifications.show(reply)
-            if (!hasPendingReply) notifications.stopWaiting()
         }
         val type = params.optString("type")
         val payload = params.optJSONObject("payload") ?: JSONObject()
@@ -600,7 +582,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onSessionInterrupted() {
         replies.cancel(_state.value.activeRuntimeSessionId)
-        if (!hasPendingReply) notifications.stopWaiting()
         _state.update { it.finishTurn("Response stopped") }
     }
 
@@ -609,7 +590,6 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             pendingFollowUp?.queueId?.let { markQueueError(it, error.message) }
             pendingFollowUp = null
             _state.update { it.copy(sendingFollowUp = false, sendingQueuedId = null, statusText = "${error.message}; message kept") }
-            if (!hasPendingReply) notifications.stopWaiting()
             return
         }
         if (error.code == 401 || error.code == 4401) {
