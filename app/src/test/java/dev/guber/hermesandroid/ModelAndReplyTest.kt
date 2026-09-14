@@ -48,7 +48,7 @@ class ModelAndReplyTest {
         val params = reasoningSelectionParams("runtime-1", "high")
         assertEquals("runtime-1", params.getString("session_id"))
         assertEquals("reasoning", params.getString("key"))
-        assertEquals("high --session", params.getString("value"))
+        assertEquals("high", params.getString("value"))
         assertThrows(IllegalArgumentException::class.java) { reasoningSelectionParams("runtime-1", "maximum") }
     }
 

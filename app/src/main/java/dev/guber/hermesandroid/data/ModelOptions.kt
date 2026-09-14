@@ -39,5 +39,5 @@ fun modelSelectionParams(sessionId: String, model: GatewayModel, confirmed: Bool
 fun reasoningSelectionParams(sessionId: String, level: String): JSONObject {
     require(sessionId.isNotBlank()) { "Start or resume a conversation first" }
     require(level in reasoningLevels) { "Reasoning level is unavailable" }
-    return JSONObject().put("session_id", sessionId).put("key", "reasoning").put("value", "$level --session")
+    return JSONObject().put("session_id", sessionId).put("key", "reasoning").put("value", level)
 }
