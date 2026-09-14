@@ -38,6 +38,26 @@ class GatewayProtocolTest {
     }
 
     @Test
+    fun gatewayRequestCarriesTicketInQueryForProxyCompatibleWssUpgrade() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(
+            ticketProvider = GatewayTicketProvider { _, _ -> Result.success("test-ticket") },
+            webSocketFactory = factory,
+        )
+        val endpoint = GatewayEndpoint.parse("https://gateway.example").getOrThrow()
+
+        assertTrue(client.connect(endpoint, dev.guber.hermesandroid.data.AuthSession("access", "refresh", 0)).isSuccess)
+
+        val request = factory.sockets.single().request()
+        assertEquals("https", request.url.scheme)
+        assertEquals("https://gateway.example/api/ws?ticket=test-ticket", request.url.toString())
+        assertEquals("/api/ws", request.url.encodedPath)
+        assertEquals("test-ticket", request.url.queryParameter("ticket"))
+        assertEquals(null, request.header("Sec-WebSocket-Protocol"))
+        client.shutdown()
+    }
+
+    @Test
     fun decoderAcceptsMultipleObjectsAndFragmentedFrames() {
         val decoder = NewlineJsonRpcDecoder()
         assertTrue(decoder.feed("{\"id\":1").isEmpty())

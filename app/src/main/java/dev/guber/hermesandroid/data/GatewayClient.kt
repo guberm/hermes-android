@@ -191,9 +191,13 @@ class GatewayClient(
             scheduleReconnect()
             return Result.failure(error)
         }
+        val requestUrl = endpoint.route("/api/ws").newBuilder()
+            .addQueryParameter("ticket", ticketResult.getOrThrow())
+            .build()
         val request = Request.Builder()
-            .url(endpoint.wsUrl)
-            .header("Sec-WebSocket-Protocol", "hermes-gateway-v1, hermes-gateway-ticket.${ticketResult.getOrThrow()}")
+            // Cloudflare Tunnel reliably forwards the WSS upgrade when the short-lived
+            // ticket is a query parameter; keep the public gateway URL and auth boundary intact.
+            .url(requestUrl)
             .build()
         val generation = synchronized(this) {
             if (manuallyClosed) return Result.failure(IllegalStateException("Gateway connection was closed"))
