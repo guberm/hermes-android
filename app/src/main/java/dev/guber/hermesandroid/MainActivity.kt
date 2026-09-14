@@ -461,7 +461,7 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                 Text(state.statusText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
             }
             Row(verticalAlignment = Alignment.Bottom) {
-                IconButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = state.activeSessionId != null && state.status == ConnectionStatus.CONNECTED) {
+                IconButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = state.activeRuntimeSessionId != null && state.status == ConnectionStatus.CONNECTED) {
                     Icon(Icons.Default.AttachFile, contentDescription = "Attach image or file")
                 }
                 OutlinedTextField(
@@ -473,12 +473,22 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                     shape = RoundedCornerShape(20.dp),
                 )
                 Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = viewModel::submitPrompt,
-                    enabled = state.draft.isNotBlank() && state.status == ConnectionStatus.CONNECTED && !state.isSending,
-                    modifier = Modifier.size(48.dp).clip(CircleShape).background(if (state.draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = if (state.draft.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (state.isSending) {
+                    IconButton(
+                        onClick = viewModel::stopStreaming,
+                        enabled = state.status == ConnectionStatus.CONNECTED,
+                        modifier = Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.errorContainer),
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Stop streaming", tint = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                } else {
+                    IconButton(
+                        onClick = viewModel::submitPrompt,
+                        enabled = state.draft.isNotBlank() && state.status == ConnectionStatus.CONNECTED,
+                        modifier = Modifier.size(48.dp).clip(CircleShape).background(if (state.draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest),
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = if (state.draft.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             Text("Files are staged by the gateway; Android paths are never sent as if they were host paths.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 48.dp, top = 4.dp))

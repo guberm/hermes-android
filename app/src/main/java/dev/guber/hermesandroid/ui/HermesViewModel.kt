@@ -16,6 +16,7 @@ import dev.guber.hermesandroid.data.GatewayError
 import dev.guber.hermesandroid.data.NativePkceLogin
 import dev.guber.hermesandroid.data.SecureCredentialStore
 import dev.guber.hermesandroid.data.SessionSummary
+import dev.guber.hermesandroid.data.SessionIdentity
 import dev.guber.hermesandroid.data.StoredConnection
 import dev.guber.hermesandroid.data.ToolActivity
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +35,7 @@ data class HermesUiState(
     val signedIn: Boolean = false,
     val sessions: List<SessionSummary> = emptyList(),
     val activeSessionId: String? = null,
+    val activeRuntimeSessionId: String? = null,
     val activeTitle: String = "New conversation",
     val messages: List<ChatMessage> = emptyList(),
     val tools: List<ToolActivity> = emptyList(),
@@ -149,8 +151,8 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             showError("Connect to the gateway before sending a message")
             return
         }
-        val sessionId = _state.value.activeSessionId
-        if (sessionId == null) {
+        val runtimeSessionId = _state.value.activeRuntimeSessionId
+        if (runtimeSessionId == null) {
             pendingPrompt = text
             _state.update { it.copy(draft = "", statusText = "Creating a session…") }
             gateway.createSession()
@@ -163,7 +165,16 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", text),
             )
         }
-        gateway.submitPrompt(sessionId, text)
+        gateway.submitPrompt(runtimeSessionId, text)
+    }
+
+    fun stopStreaming() {
+        if (!_state.value.isSending) return
+        if (gateway.interruptActiveSession()) {
+            _state.update { it.copy(statusText = "Stopping the current response…") }
+        } else {
+            showError("No active gateway session is available to stop")
+        }
     }
 
     fun chooseApproval(request: ApprovalRequest, choice: String) {
@@ -172,8 +183,8 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun attach(name: String, mimeType: String, bytes: ByteArray) {
-        val sessionId = _state.value.activeSessionId
-        if (sessionId == null) {
+        val runtimeSessionId = _state.value.activeRuntimeSessionId
+        if (runtimeSessionId == null) {
             showError("Start or resume a session before attaching a file")
             return
         }
@@ -183,9 +194,9 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         }
         _state.update { it.copy(statusText = "Uploading $name…") }
         if (mimeType.startsWith("image/", ignoreCase = true)) {
-            gateway.attachImage(sessionId, bytes, name, name.substringAfterLast('.', "").ifBlank { null })
+            gateway.attachImage(runtimeSessionId, bytes, name, name.substringAfterLast('.', "").ifBlank { null })
         } else {
-            gateway.attachFile(sessionId, bytes, name, mimeType.ifBlank { "application/octet-stream" })
+            gateway.attachFile(runtimeSessionId, bytes, name, mimeType.ifBlank { "application/octet-stream" })
         }
     }
 
@@ -199,6 +210,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                     ConnectionStatus.DISCONNECTED -> "Disconnected"
                     ConnectionStatus.ERROR -> "Connection error"
                 },
+                activeRuntimeSessionId = if (status == ConnectionStatus.CONNECTED) it.activeRuntimeSessionId else null,
                 isSending = if (status == ConnectionStatus.ERROR) false else it.isSending,
             )
         }
@@ -213,24 +225,24 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         _state.update { it.copy(sessions = sessions, statusText = if (it.activeSessionId == null) "Connected" else it.statusText) }
     }
 
-    override fun onSessionReady(sessionId: String, messages: List<ChatMessage>) {
-        gateway.setActiveSession(sessionId)
+    override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>) {
         val queued = pendingPrompt
         pendingPrompt = null
         _state.update {
             it.copy(
-                activeSessionId = sessionId,
+                activeSessionId = session.storedSessionId,
+                activeRuntimeSessionId = session.runtimeSessionId,
                 messages = messages,
                 tools = emptyList(),
                 approvals = emptyList(),
                 isSending = queued != null,
-                activeTitle = it.sessions.firstOrNull { session -> session.id == sessionId }?.title ?: "New conversation",
+                activeTitle = it.sessions.firstOrNull { item -> item.id == session.storedSessionId }?.title ?: "New conversation",
                 statusText = "Connected",
             )
         }
-        if (!queued.isNullOrBlank()) {
+        if (!queued.isNullOrBlank() && !session.runtimeSessionId.isNullOrBlank()) {
             _state.update { it.copy(messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", queued)) }
-            gateway.submitPrompt(sessionId, queued)
+            gateway.submitPrompt(session.runtimeSessionId, queued)
         }
     }
 
@@ -238,7 +250,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         val type = params.optString("type")
         val payload = params.optJSONObject("payload") ?: JSONObject()
         val sessionId = params.optString("session_id")
-        if (sessionId.isNotBlank() && sessionId != _state.value.activeSessionId) return
+        if (sessionId.isNotBlank() && sessionId != _state.value.activeRuntimeSessionId) return
         when (type) {
             "message.start" -> {
                 val role = payload.optString("role", "assistant")
@@ -304,9 +316,21 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         _state.update { it.copy(attachments = (it.attachments + receipt).takeLast(8), statusText = "Attached ${receipt.name}") }
     }
 
+    override fun onPendingApprovals(approvals: List<ApprovalRequest>) {
+        if (approvals.isEmpty()) return
+        _state.update { current ->
+            val merged = (current.approvals + approvals).distinctBy { it.requestId }
+            current.copy(approvals = merged, statusText = "Approval required")
+        }
+    }
+
     override fun onReplayGap(sessionId: String) {
         _state.update { it.copy(statusText = "Replay window was truncated - reloading session history…") }
-        gateway.resumeSession(sessionId)
+        gateway.resumeActiveSession()
+    }
+
+    override fun onSessionInterrupted() {
+        _state.update { it.copy(isSending = false, statusText = "Response stopped") }
     }
 
     override fun onRpcError(method: String, error: GatewayError) {

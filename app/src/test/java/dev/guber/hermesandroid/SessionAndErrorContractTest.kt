@@ -2,13 +2,17 @@ package dev.guber.hermesandroid
 
 import dev.guber.hermesandroid.data.AuthApi
 import dev.guber.hermesandroid.data.AuthSession
+import dev.guber.hermesandroid.data.approvalPendingParams
 import dev.guber.hermesandroid.data.approvalResponseParams
 import dev.guber.hermesandroid.data.promptSubmitParams
+import dev.guber.hermesandroid.data.sessionIdentity
+import dev.guber.hermesandroid.data.sessionInterruptParams
 import dev.guber.hermesandroid.data.sessionCreateParams
 import dev.guber.hermesandroid.data.sessionResumeParams
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Test
 
 class SessionAndErrorContractTest {
@@ -22,12 +26,24 @@ class SessionAndErrorContractTest {
     }
 
     @Test
+    fun sessionIdentityKeepsDurableAndRuntimeIdsSeparate() {
+        val identity = JSONObject()
+            .put("session_id", "runtime-7")
+            .put("session_key", "stored-42")
+            .sessionIdentity()
+        assertEquals("stored-42", identity?.storedSessionId)
+        assertEquals("runtime-7", identity?.runtimeSessionId)
+    }
+
+    @Test
     fun promptAndApprovalPayloadsAreExplicit() {
         val prompt = promptSubmitParams("runtime-1", "hello")
         assertEquals("runtime-1", prompt.getString("session_id"))
         assertEquals("hello", prompt.getString("text"))
         assertFalse(prompt.getBoolean("queued"))
         assertEquals("deny", approvalResponseParams("approval-1", "deny").getString("choice"))
+        assertEquals("runtime-1", sessionInterruptParams("runtime-1").getString("session_id"))
+        assertEquals("runtime-1", approvalPendingParams("runtime-1").getString("session_id"))
     }
 
     @Test

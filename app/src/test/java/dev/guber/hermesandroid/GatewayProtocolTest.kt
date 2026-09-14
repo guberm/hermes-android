@@ -1,7 +1,11 @@
 package dev.guber.hermesandroid
 
 import dev.guber.hermesandroid.data.GatewayEndpoint
+import dev.guber.hermesandroid.data.GatewayClient
+import dev.guber.hermesandroid.data.GatewayGenerationGate
 import dev.guber.hermesandroid.data.NewlineJsonRpcDecoder
+import dev.guber.hermesandroid.data.ReconnectPolicy
+import dev.guber.hermesandroid.data.SequencedEventGate
 import dev.guber.hermesandroid.data.jsonRpcRequest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -37,9 +41,76 @@ class GatewayProtocolTest {
     @Test
     fun decoderFinishHandlesFinalObjectWithoutNewline() {
         val decoder = NewlineJsonRpcDecoder()
-        decoder.feed("{\"method\":\"event\"}")
-        assertEquals("event", decoder.finish().single().getString("method"))
+        assertEquals("event", decoder.feed("{\"method\":\"event\"}").single().getString("method"))
         assertTrue(decoder.finish().isEmpty())
+    }
+
+    @Test
+    fun decoderDispatchesOneCompleteJsonObjectPerWebSocketTextFrame() {
+        val decoder = NewlineJsonRpcDecoder()
+        val messages = decoder.feed("{\"method\":\"event\",\"params\":{\"seq\":7}}")
+        assertEquals(1, messages.size)
+        assertEquals(7, messages.single().getJSONObject("params").getInt("seq"))
+    }
+
+    @Test
+    fun decoderAcceptsMultipleObjectsInOneFrameWithoutNewlines() {
+        val decoder = NewlineJsonRpcDecoder()
+        val messages = decoder.feed("{\"id\":1}{\"id\":2}")
+        assertEquals(listOf(1, 2), messages.map { it.getInt("id") })
+    }
+
+    @Test
+    fun sequenceGateDeduplicatesReplayAndNeverMovesWatermarkBackwards() {
+        val gate = SequencedEventGate()
+        fun event(seq: Long) = JSONObject().put("session_id", "runtime-1").put("seq", seq)
+
+        assertTrue(gate.accept(event(4)))
+        assertFalse(gate.accept(event(4)))
+        assertFalse(gate.accept(event(2)))
+        assertTrue(gate.accept(event(5)))
+        assertEquals(5, gate.watermark("runtime-1"))
+    }
+
+    @Test
+    fun gatewayTransportDispatchesActualUnterminatedHermesTextFrameAndDeduplicatesIt() {
+        val client = GatewayClient()
+        val received = mutableListOf<JSONObject>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onEvent(params: JSONObject) {
+                received += params
+            }
+        }
+        val frame = "{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{\"type\":\"message.delta\",\"session_id\":\"runtime-1\",\"seq\":9}}"
+        client.receiveTextFrame(frame)
+        client.receiveTextFrame(frame)
+        assertEquals(1, received.size)
+        assertEquals("message.delta", received.single().getString("type"))
+        client.shutdown()
+    }
+
+    @Test
+    fun oldWebSocketGenerationIsRejectedAfterReconnect() {
+        val generations = GatewayGenerationGate()
+        val first = generations.begin()
+        val second = generations.begin()
+        assertFalse(generations.isCurrent(first))
+        assertTrue(generations.isCurrent(second))
+    }
+
+    @Test
+    fun reconnectPolicyIsBoundedAndUsesExponentialBackoff() {
+        val policy = ReconnectPolicy(maxAttempts = 3, baseDelayMillis = 1_000)
+        assertEquals(1_000L, policy.delayForAttempt(0))
+        assertEquals(2_000L, policy.delayForAttempt(1))
+        assertEquals(4_000L, policy.delayForAttempt(2))
+        assertEquals(null, policy.delayForAttempt(3))
+    }
+
+    @Test
+    fun readWatchdogHasARealDeadline() {
+        assertFalse(dev.guber.hermesandroid.data.readWatchdogExpired(10_000, 9_500, 1_000))
+        assertTrue(dev.guber.hermesandroid.data.readWatchdogExpired(10_500, 9_500, 1_000))
     }
 
     @Test
