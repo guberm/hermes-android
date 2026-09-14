@@ -19,11 +19,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -34,6 +34,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -155,9 +163,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun HermesApp(viewModel: HermesViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    HermesTheme {
+    HermesTheme(state.darkMode) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            if (state.signedIn) ChatShell(state, viewModel) else SetupScreen(state, viewModel)
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)).clipToBounds()) {
+                if (state.signedIn) ChatShell(state, viewModel) else SetupScreen(state, viewModel)
+            }
         }
     }
 }
@@ -539,29 +549,32 @@ private fun EmptyConversation(statusText: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(message: ChatMessage) {
     val context = LocalContext.current
+    var showCopy by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 340.dp).fillMaxWidth(if (user) 0.88f else 1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(horizontal = 5.dp, vertical = 2.dp))
-                IconButton(onClick = { copyText(context, message.text) }, enabled = message.text.isNotBlank()) {
-                    Icon(Icons.Default.ContentCopy, "Copy message", modifier = Modifier.size(18.dp))
+            Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+            Box {
+                Surface(
+                    color = if (user) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = if (user) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
+                ) {
+                    Text(
+                        text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
+                        modifier = Modifier.combinedClickable(
+                            enabled = message.text.isNotBlank(), onClick = {},
+                            onLongClickLabel = "Message options", onLongClick = { showCopy = true }
+                        ).padding(horizontal = 16.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
                 }
-            }
-            Surface(
-                color = if (user) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = if (user) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
-            ) {
-                SelectionContainer {
-                Text(
-                    text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                DropdownMenu(expanded = showCopy, onDismissRequest = { showCopy = false }) {
+                    DropdownMenuItem(text = { Text("Copy message") }, onClick = { copyText(context, message.text); showCopy = false })
                 }
             }
         }
@@ -709,6 +722,10 @@ private fun SettingsDialog(state: HermesUiState, viewModel: HermesViewModel, onD
         title = { Text("Connection settings") },
         text = {
             Column {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (state.darkMode) "Dark mode" else "Light mode", modifier = Modifier.weight(1f))
+                    Switch(checked = state.darkMode, onCheckedChange = viewModel::setDarkMode, modifier = Modifier.semantics { contentDescription = "Dark mode" })
+                }
                 Text(state.endpointText, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
                 Text("Your sign-in is stored securely on this phone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -778,6 +795,26 @@ private val HermesDark = androidx.compose.material3.darkColorScheme(
 )
 
 @Composable
-private fun HermesTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = HermesDark, content = content)
+private fun HermesTheme(darkMode: Boolean, content: @Composable () -> Unit) {
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.context as android.app.Activity).window
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = !darkMode
+            isAppearanceLightNavigationBars = !darkMode
+        }
+    }
+    MaterialTheme(colorScheme = if (darkMode) HermesDark else HermesLight, content = content)
 }
+
+private val HermesLight = androidx.compose.material3.lightColorScheme(
+    primary = Color(0xFF5E50B5),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFE5E0FF),
+    onPrimaryContainer = Color(0xFF17122F),
+    secondaryContainer = Color(0xFFE7E1F8),
+    surface = Color(0xFFFCF8FF),
+    background = Color(0xFFFCF8FF),
+    onSurface = Color(0xFF1C1B20),
+    onSurfaceVariant = Color(0xFF49454F),
+)

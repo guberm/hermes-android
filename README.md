@@ -92,3 +92,7 @@ Set **Chat actions → Default send mode** to **Steer** (guide the current respo
 Steer uses `session.steer`. Queue keeps the message on this device until the current response finishes, showing a **QUEUED** card with **Cancel** and **Send now**. Cancel removes an unsent message; Send now uses Steer during a response or starts a normal turn when idle. Automatic dispatch uses `prompt.submit` with `queued=true` to avoid interrupting a turn that started in the meantime. The card is removed only after acknowledgement; rejected requests remain available with an error. Queued text is saved in private app storage, scoped by gateway URL. After a force-stop/restart, reopen the chat to resume its queue. If no session exists yet, regular Send creates a conversation first.
 
 The composer and drawer respect system navigation/keyboard insets. The activity uses explicit resize behavior so Android's window panning does not duplicate Compose's keyboard padding.
+
+### Appearance and message actions
+
+Long-press a message and choose **Copy message**. The message has no permanent Copy button. Use **Connection settings → Dark mode** to switch between dark and light appearance; the selection is remembered on this device. Screen content respects the top system bar and display cutouts, and status-bar icons follow the selected theme.

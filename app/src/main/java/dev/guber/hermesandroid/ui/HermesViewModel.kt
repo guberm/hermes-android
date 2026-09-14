@@ -52,6 +52,7 @@ data class HermesUiState(
     val isSending: Boolean = false,
     val sendingFollowUp: Boolean = false,
     val defaultQueue: Boolean = true,
+    val darkMode: Boolean = true,
     val queuedPrompts: List<QueuedPrompt> = emptyList(),
     val sendingQueuedId: String? = null,
     val loginInProgress: Boolean = false,
@@ -105,7 +106,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         _state.value.queuedPrompts.any { it.runtimeId != null && it.error == null }
 
     init {
-        _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true)) }
+        _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
         if (connection != null) {
             _state.update { it.copy(signedIn = true, statusText = "Ready to connect") }
@@ -179,7 +180,12 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         gateway.close()
         store.clear()
         connection = null
-        _state.value = HermesUiState(endpointText = _state.value.endpointText, statusText = "Connect to a Hermes Gateway", defaultQueue = chatPreferences.getBoolean("default_queue", true))
+        _state.value = HermesUiState(endpointText = _state.value.endpointText, statusText = "Connect to a Hermes Gateway", defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = _state.value.darkMode)
+    }
+
+    fun setDarkMode(dark: Boolean) {
+        chatPreferences.edit().putBoolean("dark_mode", dark).apply()
+        _state.update { it.copy(darkMode = dark) }
     }
 
     fun refreshSessions() = gateway.requestSessions()
