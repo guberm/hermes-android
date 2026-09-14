@@ -18,9 +18,9 @@ Install subsequent releases over the existing app to retain sign-in and preferen
 
 ## Features
 
-- **Conversations:** create chats, load history, stream replies, follow tool progress, and answer approval requests.
+- **Conversations:** create chats, load history with message times, stream replies, follow expandable Gateway reasoning and tool progress, and answer approval requests. Final replies appear after their reasoning and tool activity.
 - **Pins and search:** pin chats to the top and filter loaded titles and previews. Pins are saved locally for each Gateway.
-- **Models:** use **Choose model** in the chat header to search models supplied by the Gateway and change the current conversation's model.
+- **Models and reasoning:** use **Choose model** in the chat header to search Gateway models and set the current conversation's reasoning level.
 - **Steer and Queue:** guide a running response or save a message to send after it finishes.
 - **Notifications:** receive reply alerts and tap them to open the conversation.
 - **Copy and export:** long-press a message for **Copy message**; use **Chat actions** to copy or export the loaded transcript.
@@ -134,7 +134,7 @@ python scripts/check_navigation_insets.py DEVICE_SERIAL --keyboard
 # Display a message first; this restarts the app and restores its initial theme:
 python scripts/check_message_ui.py DEVICE_SERIAL "VISIBLE_MESSAGE_TEXT"
 # Start a tool-running request first:
-python scripts/check_active_tool_after_user.py DEVICE_SERIAL "VISIBLE_USER_MESSAGE"
+python scripts/check_active_tool_after_user.py DEVICE_SERIAL "VISIBLE_USER_MESSAGE" "VISIBLE_ASSISTANT_ANSWER"
 ```
 
 Unit tests cover URL validation, HTTPS-to-WSS mapping, Hermes one-object-per-WebSocket-frame plus newline/multi-object compatibility framing, JSON-RPC request envelopes, durable/runtime session identity and replay sequencing, generation-safe reconnect policy/watchdog behavior, session interrupt/pending-approval payloads, expiry safety window, error mapping, and attachment size/data-URL behavior. They are protocol/logic tests and do not claim a live Gateway.
