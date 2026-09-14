@@ -44,6 +44,16 @@ export HERMES_KEY_PASSWORD="$HERMES_KEYSTORE_PASSWORD"
 
 The Gradle configuration only enables release signing when all three variables are present. Never commit a keystore, passwords, `local.properties`, or APKs.
 
+### GitHub signed builds
+
+The **Signed APK** workflow runs on pushes to `main` and through **Run workflow**. It runs unit tests and release lint, builds the signed APK, verifies its certificate, and uploads only the APK as an Actions artifact.
+
+Repository Actions secrets: `HERMES_KEYSTORE_BASE64`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_KEY_PASSWORD`. Key alias: `hermes`.
+
+Permanent release certificate SHA-256 (created September 14, 2026): `E93103035BE3FC77AA486D0186BD1E2A7D1FA110DCAC4C82CEEB0022B0730A03`.
+
+This new key intentionally replaces the unavailable v0.1.0 candidate key. Older candidate/debug installations cannot update directly to this signature; reinstalling removes local app data. Subsequent releases must keep this key.
+
 ### Windows with Controlled Folder Access
 
 If Windows blocks Java from writing under Documents, build a local copy under LocalAppData. Keep Windows protection enabled:

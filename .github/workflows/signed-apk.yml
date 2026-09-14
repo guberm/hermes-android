@@ -1,0 +1,60 @@
+name: Signed APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Restore signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HERMES_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.HERMES_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$STORE_PASSWORD" && test -n "$KEY_PASSWORD" || {
+            echo 'Missing Android signing secrets' >&2
+            exit 1
+          }
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/hermes-release.jks"
+      - name: Test and build signed APK
+        env:
+          HERMES_KEYSTORE: ${{ runner.temp }}/hermes-release.jks
+          HERMES_KEYSTORE_PASSWORD: ${{ secrets.HERMES_KEYSTORE_PASSWORD }}
+          HERMES_KEY_PASSWORD: ${{ secrets.HERMES_KEY_PASSWORD }}
+        run: ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease --no-daemon
+      - name: Verify permanent release signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/apk-signature.txt"
+          cat "$RUNNER_TEMP/apk-signature.txt"
+          grep -Fx 'Signer #1 certificate SHA-256 digest: e93103035be3fc77aa486d0186bd1e2a7d1fa110dcac4c82ceeb0022b0730a03' "$RUNNER_TEMP/apk-signature.txt"
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-android-signed-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+      - name: Remove signing key
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/hermes-release.jks"
