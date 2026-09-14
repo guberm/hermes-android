@@ -519,9 +519,9 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
         if (state.messages.isEmpty() && state.tools.isEmpty()) {
             item { EmptyConversation(statusText = state.statusText) }
         }
+        items(state.messages, key = { it.id }) { MessageBubble(it) }
         items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
         items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
-        items(state.messages, key = { it.id }) { MessageBubble(it) }
         if (state.attachments.isNotEmpty()) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {

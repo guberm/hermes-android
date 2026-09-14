@@ -122,7 +122,7 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
 ## Verification boundaries
 
-Version **0.1.6** passed 38 JVM tests and release lint. Its signed APK was installed on a Pixel 7 Pro and checked against a live Gateway. Device checks covered long streaming replies, no foreground waiting service, completion alerts, themes, system/keyboard insets, and drawer dismissal. See [v0.1.6 device evidence](docs/evidence/DEVICE-0.1.6.md).
+Version **0.1.7** passed 38 JVM tests and release lint. Its signed APK was installed on a Pixel 7 Pro and checked against a live Gateway. Device checks covered the order of active tool cards after the user's message, long streaming replies, no foreground waiting service, themes, system/keyboard insets, and drawer dismissal. See [v0.1.7 device evidence](docs/evidence/DEVICE-0.1.7.md).
 
 Runnable checks require ADB and a signed-in app:
 
@@ -133,6 +133,8 @@ python scripts/check_navigation_insets.py DEVICE_SERIAL
 python scripts/check_navigation_insets.py DEVICE_SERIAL --keyboard
 # Display a message first; this restarts the app and restores its initial theme:
 python scripts/check_message_ui.py DEVICE_SERIAL "VISIBLE_MESSAGE_TEXT"
+# Start a tool-running request first:
+python scripts/check_active_tool_after_user.py DEVICE_SERIAL "VISIBLE_USER_MESSAGE"
 ```
 
 Unit tests cover URL validation, HTTPS-to-WSS mapping, Hermes one-object-per-WebSocket-frame plus newline/multi-object compatibility framing, JSON-RPC request envelopes, durable/runtime session identity and replay sequencing, generation-safe reconnect policy/watchdog behavior, session interrupt/pending-approval payloads, expiry safety window, error mapping, and attachment size/data-URL behavior. They are protocol/logic tests and do not claim a live Gateway.
