@@ -37,6 +37,7 @@ data class HermesUiState(
     val statusText: String = "Connect to a Hermes Gateway",
     val signedIn: Boolean = false,
     val sessions: List<SessionSummary> = emptyList(),
+    val pinnedSessions: Set<String> = emptySet(),
     val activeSessionId: String? = null,
     val activeRuntimeSessionId: String? = null,
     val activeTitle: String = "New conversation",
@@ -56,6 +57,10 @@ data class HermesUiState(
     val modelError: String? = null,
 )
 
+internal fun visibleSessions(sessions: List<SessionSummary>, pins: Set<String>, query: String): List<SessionSummary> =
+    sessions.filter { it.title.contains(query.trim(), ignoreCase = true) || it.preview.contains(query.trim(), ignoreCase = true) }
+        .sortedByDescending { it.id in pins }
+
 internal fun HermesUiState.finishTurn(statusText: String = this.statusText): HermesUiState =
     copy(
         isSending = false,
@@ -70,6 +75,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private val gateway = GatewayClient(authApi)
     private val pkce = NativePkceLogin(application, authApi)
     private var connection: StoredConnection? = store.load()
+    private val chatPreferences = application.getSharedPreferences("chat_preferences", android.content.Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(HermesUiState(endpointText = connection?.endpoint?.origin?.toString().orEmpty()))
     val state: StateFlow<HermesUiState> = _state.asStateFlow()
     private var pendingPrompt: String? = null
@@ -124,6 +130,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             return
         }
         connection = saved
+        _state.update { it.copy(pinnedSessions = chatPreferences.getStringSet("pins:${saved.endpoint.origin}", emptySet()).orEmpty().toSet()) }
         viewModelScope.launch {
             var auth = saved.auth
             if (auth.isExpired(System.currentTimeMillis() / 1000) && auth.refreshToken.isNotBlank()) {
@@ -157,6 +164,14 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun refreshSessions() = gateway.requestSessions()
+
+    fun togglePin(session: SessionSummary) {
+        val origin = connection?.endpoint?.origin ?: return
+        val pins = _state.value.pinnedSessions.toMutableSet()
+        if (!pins.add(session.id)) pins.remove(session.id)
+        chatPreferences.edit().putStringSet("pins:$origin", pins).apply()
+        _state.update { it.copy(pinnedSessions = pins) }
+    }
 
     fun openSession(sessionId: String) {
         if (sessionId.isBlank()) return

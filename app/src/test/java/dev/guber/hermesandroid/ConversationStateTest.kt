@@ -4,12 +4,26 @@ import dev.guber.hermesandroid.data.ChatMessage
 import dev.guber.hermesandroid.data.ToolActivity
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.finishTurn
+import dev.guber.hermesandroid.ui.visibleSessions
+import dev.guber.hermesandroid.data.SessionSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationStateTest {
+    @Test
+    fun sessionSearchKeepsPinsFirstAndPreservesServerOrder() {
+        val sessions = listOf(
+            SessionSummary("new", "Newest", "Android build", 1),
+            SessionSummary("other", "Other", "", 1),
+            SessionSummary("pin", "Android", "Older chat", 2),
+        )
+        assertEquals(listOf("pin", "new", "other"), visibleSessions(sessions, setOf("pin", "missing"), "").map { it.id })
+        assertEquals(listOf("pin", "new"), visibleSessions(sessions, setOf("pin"), " ANDROID ").map { it.id })
+        assertEquals(sessions, visibleSessions(sessions, emptySet(), ""))
+        assertTrue(visibleSessions(sessions, setOf("pin"), "no match").isEmpty())
+    }
     @Test
     fun finishedTurnStopsThinkingAndPreservesPartialResponse() {
         val state = HermesUiState(

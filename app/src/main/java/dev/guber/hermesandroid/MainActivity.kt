@@ -14,6 +14,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import dev.guber.hermesandroid.ui.visibleSessions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -221,11 +230,23 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
+    var showChatMenu by remember { mutableStateOf(false) }
+    val chatContext = LocalContext.current
+    val exportChat = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) scope.launch {
+            val text = state.messages.joinToString("\n\n") { "${it.role}:\n${it.text}" }
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { checkNotNull(chatContext.contentResolver.openOutputStream(uri)).bufferedWriter().use { it.write(text) } }
+            }
+            android.widget.Toast.makeText(chatContext, if (result.isSuccess) "Chat exported" else "Could not export chat", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             SessionDrawer(
                 state = state,
+                onPin = viewModel::togglePin,
                 onNew = {
                     scope.launch { drawerState.close() }
                     viewModel.newSession()
@@ -256,7 +277,19 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         IconButton(onClick = { showModels = true; viewModel.loadModels() }, enabled = state.status == ConnectionStatus.CONNECTED && !state.isSending) {
                             Icon(Icons.Default.Tune, contentDescription = "Choose model")
                         }
-                        IconButton(onClick = { viewModel.refreshSessions() }) { Icon(Icons.Default.Refresh, contentDescription = "Refresh sessions") }
+                        Box {
+                            IconButton(onClick = { showChatMenu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
+                            DropdownMenu(expanded = showChatMenu, onDismissRequest = { showChatMenu = false }) {
+                                DropdownMenuItem(text = { Text("Refresh chats") }, onClick = { showChatMenu = false; viewModel.refreshSessions() })
+                                DropdownMenuItem(text = { Text("Copy transcript") }, enabled = state.messages.isNotEmpty(), onClick = {
+                                    showChatMenu = false
+                                    copyText(chatContext, state.messages.joinToString("\n\n") { "${it.role}:\n${it.text}" })
+                                })
+                                DropdownMenuItem(text = { Text("Export chat (.txt)") }, enabled = state.messages.isNotEmpty(), onClick = {
+                                    showChatMenu = false; exportChat.launch("hermes-chat-${state.activeSessionId ?: "new"}.txt")
+                                })
+                            }
+                        }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Connection settings") }
                     },
                 )
@@ -334,7 +367,9 @@ private fun ConnectionPill(state: HermesUiState) {
 }
 
 @Composable
-private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (SessionSummary) -> Unit) {
+private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (SessionSummary) -> Unit, onPin: (SessionSummary) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val sessions = visibleSessions(state.sessions, state.pinnedSessions, query)
     ModalDrawerSheet {
         Column(Modifier.fillMaxSize().padding(top = 18.dp)) {
             Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -359,6 +394,14 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
             }
             Spacer(Modifier.height(18.dp))
             HorizontalDivider()
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                label = { Text("Search chats") }, singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear search") } },
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+            )
             if (state.sessions.isEmpty()) {
                 Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("No saved sessions", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -366,8 +409,10 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
                 }
             } else {
                 LazyColumn(Modifier.fillMaxWidth()) {
-                    items(state.sessions, key = { it.id }) { session ->
-                        SessionRow(session, selected = session.id == state.activeSessionId, onClick = { onSelect(session) })
+                    if (sessions.isEmpty()) item { Text("No matching chats", Modifier.padding(20.dp)) }
+                    items(sessions, key = { it.id }) { session ->
+                        SessionRow(session, selected = session.id == state.activeSessionId, pinned = session.id in state.pinnedSessions,
+                            onPin = { onPin(session) }, onClick = { onSelect(session) })
                     }
                 }
             }
@@ -376,7 +421,7 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
 }
 
 @Composable
-private fun SessionRow(session: SessionSummary, selected: Boolean, onClick: () -> Unit) {
+private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boolean, onPin: () -> Unit, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -392,6 +437,10 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, onClick: () -
             if (session.preview.isNotBlank()) Text(session.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (session.messageCount > 0) Text(session.messageCount.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        IconButton(onClick = onPin) {
+            Icon(Icons.Default.PushPin, contentDescription = if (pinned) "Unpin ${session.title}" else "Pin ${session.title}",
+                tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
+        }
     }
 }
 
@@ -453,23 +502,37 @@ private fun EmptyConversation(statusText: String) {
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {
+    val context = LocalContext.current
     val user = message.role.equals("user", ignoreCase = true)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 340.dp).fillMaxWidth(if (user) 0.88f else 1f)) {
-            Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (user) "You" else "Hermes", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(horizontal = 5.dp, vertical = 2.dp))
+                IconButton(onClick = { copyText(context, message.text) }, enabled = message.text.isNotBlank()) {
+                    Icon(Icons.Default.ContentCopy, "Copy message", modifier = Modifier.size(18.dp))
+                }
+            }
             Surface(
                 color = if (user) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
                 contentColor = if (user) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
                 shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
             ) {
+                SelectionContainer {
                 Text(
                     text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
+                }
             }
         }
     }
+}
+
+private fun copyText(context: Context, text: String) {
+    context.getSystemService(android.content.ClipboardManager::class.java)
+        .setPrimaryClip(android.content.ClipData.newPlainText("Hermes", text))
+    if (Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
 }
 
 @Composable

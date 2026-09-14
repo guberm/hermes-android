@@ -10,7 +10,7 @@ A native Kotlin + Jetpack Compose client for an authenticated Hermes Gateway. Th
 - Newline-delimited JSON-RPC over `/api/ws`, tolerant of multiple messages per WebSocket frame.
 - Gateway ready, heartbeat, session list/create/resume, prompt streaming, tool progress, approvals, replay watermark, and truncated-replay recovery.
 - Image uploads through `image.attach_bytes` and non-image files through `file.attach` data URLs. The Android filesystem path is never sent to Hermes as a host path.
-- Explicit offline/error/unsupported states. Clipboard integration, local Android tool execution, and unauthenticated Desktop endpoints are not exposed.
+- Explicit offline/error/unsupported states. Local Android tool execution and unauthenticated Desktop endpoints are not exposed.
 - Original vector launcher mark and dark Material 3 interface.
 - Chat history accepts the Gateway's `text` format and legacy `content` blocks; late session responses cannot replace a newer selection.
 - Searchable, server-provided model picker, with session-only changes and server-requested confirmation.
@@ -68,3 +68,9 @@ This uses the authenticated Gateway connection, not a push backend. It does not 
 Unit tests cover URL validation, HTTPS-to-WSS mapping, Hermes one-object-per-WebSocket-frame plus newline/multi-object compatibility framing, JSON-RPC request envelopes, durable/runtime session identity and replay sequencing, generation-safe reconnect policy/watchdog behavior, session interrupt/pending-approval payloads, expiry safety window, error mapping, and attachment size/data-URL behavior. They are protocol/logic tests and do not claim a live Gateway.
 
 A live integration test requires a user-authorized gateway URL and sign-in. No backend credentials are stored in this repository. Device validation requires an attached authorized device or isolated emulator; the build remains useful without one.
+# Chat conveniences (0.1.2)
+
+- Pin/unpin from the pin button on each chat row. Pinned chats appear first and persist on this device, separately for each gateway URL.
+- Search loaded chat titles and previews from the drawer. This is local filtering, not a server-wide message search.
+- Select text or use **Copy message**. **Chat actions** also provides **Copy transcript**, **Export chat (.txt)**, and **Refresh chats**.
+- Export saves the loaded conversation through Android's system document picker.
