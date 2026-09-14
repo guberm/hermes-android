@@ -1,5 +1,6 @@
 # Gradle and local Android state
 .gradle/
+.kotlin/
 local.properties
 .idea/
 *.iml

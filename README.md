@@ -12,6 +12,9 @@ A native Kotlin + Jetpack Compose client for an authenticated Hermes Gateway. Th
 - Image uploads through `image.attach_bytes` and non-image files through `file.attach` data URLs. The Android filesystem path is never sent to Hermes as a host path.
 - Explicit offline/error/unsupported states. Clipboard integration, local Android tool execution, and unauthenticated Desktop endpoints are not exposed.
 - Original vector launcher mark and dark Material 3 interface.
+- Chat history accepts the Gateway's `text` format and legacy `content` blocks; late session responses cannot replace a newer selection.
+- Searchable, server-provided model picker, with session-only changes and server-requested confirmation.
+- Reply notifications with sound and a temporary foreground service while an Android-started response is pending. Tapping a notification opens its conversation.
 
 ## Backend prerequisites
 
@@ -40,6 +43,25 @@ export HERMES_KEY_PASSWORD="$HERMES_KEYSTORE_PASSWORD"
 ```
 
 The Gradle configuration only enables release signing when all three variables are present. Never commit a keystore, passwords, `local.properties`, or APKs.
+
+### Windows with Controlled Folder Access
+
+If Windows blocks Java from writing under Documents, build a local copy under LocalAppData. Keep Windows protection enabled:
+
+```powershell
+$stage = Join-Path $env:LOCALAPPDATA 'HermesAndroid\device-build'
+robocopy . $stage /E /XD .git .gradle .kotlin build /XF local.properties /NFL /NDL /NJH /NJS /NP
+if ($LASTEXITCODE -ge 8) { throw 'Build staging failed' }
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+# Set JAVA_HOME to your installed JDK before invoking Gradle.
+& "$stage\gradlew.bat" -p $stage :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain --max-workers=2
+```
+
+### Notifications
+
+Allow notifications when Android asks, or use **Connection settings → Notification settings**. While a response started in Android is pending, a quiet **Hermes is working** notification keeps the connection active after leaving the app. The reply replaces it with a normal sound-enabled notification. Android's Do Not Disturb and channel settings still apply.
+
+This uses the authenticated Gateway connection, not a push backend. It does not monitor every unrelated server conversation when the application is stopped. Disconnecting/signing out ends the local wait; it does not cancel work on the server.
 
 ## Verification boundaries
 

@@ -10,6 +10,7 @@ import dev.guber.hermesandroid.data.SessionIdentity
 import dev.guber.hermesandroid.data.SequencedEventGate
 import dev.guber.hermesandroid.data.jsonRpcRequest
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import okio.ByteString
 import okhttp3.Protocol
 import okhttp3.Request
@@ -23,6 +24,129 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GatewayProtocolTest {
+    @Test
+    fun expiredBearerRequestsRefreshInsteadOfRetryingTheSameCredential() = runBlocking {
+        val errors = mutableListOf<dev.guber.hermesandroid.data.GatewayError>()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ ->
+            Result.failure(dev.guber.hermesandroid.data.GatewayHttpException(401, "session_expired"))
+        })
+        client.listener = object : GatewayClient.Listener {
+            override fun onRpcError(method: String, error: dev.guber.hermesandroid.data.GatewayError) { errors += error }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("expired", "refresh", 0))
+            assertEquals(401, errors.single().code)
+        } finally { client.shutdown() }
+    }
+
+    @Test
+    fun lateHistoryResponseCannotReplaceTheSelectedConversation() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        val selected = mutableListOf<String>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onSessionReady(session: SessionIdentity, messages: List<dev.guber.hermesandroid.data.ChatMessage>) { selected += session.storedSessionId }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.resumeSession("first")
+            client.resumeSession("second")
+            val requests = socket.sent.map(::JSONObject).filter { it.getString("method") == "session.resume" }
+            for (request in requests.reversed()) {
+                val session = request.getJSONObject("params").getString("session_id")
+                socket.deliver("""{"id":${request.getLong("id")},"result":{"session_id":"runtime-$session","session_key":"$session","messages":[]}}""")
+            }
+            assertEquals(listOf("second"), selected)
+        } finally { client.shutdown() }
+    }
+
+    @Test
+    fun resumedHistoryReadsGatewayTextAndLegacyContent() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        var history = emptyList<dev.guber.hermesandroid.data.ChatMessage>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onSessionReady(session: SessionIdentity, messages: List<dev.guber.hermesandroid.data.ChatMessage>) { history = messages }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.resumeSession("stored")
+            val request = socket.sentRequest("session.resume")
+            socket.deliver("""{"id":${request.getLong("id")},"result":{"session_id":"runtime","session_key":"stored","messages":[{"role":"user","text":"Hello"},{"role":"assistant","text":"ANDROID_OK"},{"role":"assistant","content":[{"type":"text","text":"Legacy"}]}]}}""")
+            assertEquals(listOf("Hello", "ANDROID_OK", "Legacy"), history.map { it.text })
+            assertEquals(listOf("user", "assistant", "assistant"), history.map { it.role })
+        } finally { client.shutdown() }
+    }
+
+    @Test
+    fun obsoleteTicketCannotReplaceNewConnection() = runBlocking {
+        val firstStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val firstTicket = kotlinx.coroutines.CompletableDeferred<Result<String>>()
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(
+            ticketProvider = GatewayTicketProvider { _, token ->
+                if (token == "old") {
+                    firstStarted.complete(Unit)
+                    firstTicket.await()
+                } else Result.success("new-ticket")
+            },
+            webSocketFactory = factory,
+        )
+        try {
+            val endpoint = GatewayEndpoint.parse("https://gateway.example").getOrThrow()
+            val old = kotlinx.coroutines.CoroutineScope(coroutineContext).async {
+                client.connect(endpoint, dev.guber.hermesandroid.data.AuthSession("old", "", 0))
+            }
+            firstStarted.await()
+            client.connect(endpoint, dev.guber.hermesandroid.data.AuthSession("new", "", 0))
+            firstTicket.complete(Result.success("old-ticket"))
+            assertTrue(old.await().isFailure)
+            assertEquals(1, factory.sockets.size)
+            assertEquals("new-ticket", factory.sockets.single().request().url.queryParameter("ticket"))
+        } finally {
+            firstTicket.complete(Result.failure(IllegalStateException("Test ended")))
+            client.shutdown()
+        }
+    }
+
+    @Test
+    fun serverClosingHandshakeClosesClientSocket() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            socket.serverClosing()
+            assertEquals(1, socket.closeCalls)
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    @Test
+    fun restoresApprovalsArrayFromGatewayContract() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        val restored = mutableListOf<dev.guber.hermesandroid.data.ApprovalRequest>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onPendingApprovals(approvals: List<dev.guber.hermesandroid.data.ApprovalRequest>) { restored += approvals }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.setActiveSession(SessionIdentity("stored", "runtime"))
+            val request = socket.sentRequest("approval.pending")
+            socket.deliver("""{"id":${request.getLong("id")},"result":{"approvals":[{"request_id":"approval-1","command":"Run checks","choices":["once","deny"]}]}}""")
+            assertEquals("approval-1", restored.single().requestId)
+        } finally { client.shutdown() }
+    }
+
     @Test
     fun endpointMapsHttpsToWssAndKeepsBasePath() {
         val endpoint = GatewayEndpoint.parse("https://gateway.example/hermes/").getOrThrow()
@@ -243,12 +367,13 @@ private class RecordingWebSocket(
     private val listener: WebSocketListener,
 ) : WebSocket {
     val sent = mutableListOf<String>()
+    var closeCalls = 0
 
     override fun request(): Request = requestValue
     override fun queueSize(): Long = 0
     override fun send(text: String): Boolean = sent.add(text)
     override fun send(bytes: ByteString): Boolean = true
-    override fun close(code: Int, reason: String?): Boolean = true
+    override fun close(code: Int, reason: String?): Boolean { closeCalls++; return true }
     override fun cancel() = Unit
 
     fun open() {
@@ -258,6 +383,8 @@ private class RecordingWebSocket(
     fun deliver(text: String) {
         listener.onMessage(this, text)
     }
+
+    fun serverClosing() = listener.onClosing(this, 1000, "Server shutdown")
 
     fun sentRequest(method: String): JSONObject = sent.map(::JSONObject).first { it.getString("method") == method }
 }

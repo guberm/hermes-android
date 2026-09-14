@@ -1,6 +1,10 @@
 package dev.guber.hermesandroid
 
 import android.content.Context
+import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -45,6 +49,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -86,7 +91,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import dev.guber.hermesandroid.data.ApprovalRequest
 import dev.guber.hermesandroid.data.ChatMessage
 import dev.guber.hermesandroid.data.ConnectionStatus
@@ -98,14 +103,37 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
 class MainActivity : ComponentActivity() {
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { HermesApp() }
+        val model = (application as HermesApplication).viewModel
+        intent.getStringExtra("session_id")?.let(model::openSession)
+        intent.removeExtra("session_id")
+        setContent { HermesApp(model) }
+        val preferences = getPreferences(Context.MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            && !preferences.getBoolean("notification_permission_requested", false)) {
+            preferences.edit().putBoolean("notification_permission_requested", true).apply()
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("session_id")?.let((application as HermesApplication).viewModel::openSession)
+        intent.removeExtra("session_id")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        (application as HermesApplication).viewModel.onForeground()
     }
 }
 
 @Composable
-fun HermesApp(viewModel: HermesViewModel = viewModel()) {
+fun HermesApp(viewModel: HermesViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     HermesTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -154,7 +182,7 @@ private fun SetupScreen(state: HermesUiState, viewModel: HermesViewModel) {
                     label = { Text("Gateway URL") },
                     placeholder = { Text("https://your-gateway") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
                     supportingText = { Text("Use HTTPS/WSS for remote connections") },
                 )
                 Spacer(Modifier.height(10.dp))
@@ -192,6 +220,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
+    var showModels by remember { mutableStateOf(false) }
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -215,6 +244,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         Column {
                             Text(state.activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                             ConnectionPill(state)
+                            if (state.currentModel.isNotBlank()) Text(state.currentModel, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                         }
                     },
                     navigationIcon = {
@@ -223,6 +253,9 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         }
                     },
                     actions = {
+                        IconButton(onClick = { showModels = true; viewModel.loadModels() }, enabled = state.status == ConnectionStatus.CONNECTED && !state.isSending) {
+                            Icon(Icons.Default.Tune, contentDescription = "Choose model")
+                        }
                         IconButton(onClick = { viewModel.refreshSessions() }) { Icon(Icons.Default.Refresh, contentDescription = "Refresh sessions") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Connection settings") }
                     },
@@ -241,6 +274,48 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     if (showSettings) {
         SettingsDialog(state, viewModel, onDismiss = { showSettings = false })
     }
+    if (showModels) ModelPicker(state, viewModel, onDismiss = { showModels = false })
+    state.modelConfirmation?.let { message ->
+        AlertDialog(onDismissRequest = viewModel::cancelModelConfirmation, title = { Text("Confirm model change") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = viewModel::confirmModel) { Text("Confirm") } },
+            dismissButton = { TextButton(onClick = viewModel::cancelModelConfirmation) { Text("Cancel") } })
+    }
+}
+
+@Composable
+private fun ModelPicker(state: HermesUiState, viewModel: HermesViewModel, onDismiss: () -> Unit) {
+    var search by remember { mutableStateOf("") }
+    val models = state.models.filter { "${it.providerName} ${it.id}".contains(search, ignoreCase = true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose model") },
+        text = {
+            Column {
+                Text("Current: ${state.currentModel.ifBlank { "Gateway default" }}", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(value = search, onValueChange = { search = it }, label = { Text("Search models") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), keyboardOptions = KeyboardOptions(autoCorrectEnabled = false))
+                if (state.loadingModels || state.changingModel) CircularProgressIndicator(Modifier.size(24.dp))
+                state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                LazyColumn(Modifier.fillMaxWidth().height(350.dp)) {
+                    items(models, key = { "${it.provider}/${it.id}" }) { model ->
+                        TextButton(onClick = { viewModel.selectModel(model) }, modifier = Modifier.fillMaxWidth(),
+                            enabled = model.available && !state.changingModel && !state.loadingModels && !state.isSending && state.status == ConnectionStatus.CONNECTED) {
+                            Column(Modifier.weight(1f)) {
+                                Text(model.id, modifier = Modifier.fillMaxWidth())
+                                Text(model.providerName + if (!model.available) " · Unavailable" else "", modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.labelSmall)
+                            }
+                            if (state.currentModel == model.id && state.currentProvider == model.provider) Icon(Icons.Default.CheckCircle, contentDescription = "Selected")
+                        }
+                    }
+                    if (models.isEmpty() && !state.loadingModels) item { Text("No available models match your search.") }
+                }
+                Text("Applies to this conversation.", style = MaterialTheme.typography.labelSmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = { TextButton(onClick = viewModel::loadModels, enabled = !state.loadingModels) { Text("Refresh") } },
+    )
 }
 
 @Composable
@@ -484,7 +559,7 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                 } else {
                     IconButton(
                         onClick = viewModel::submitPrompt,
-                        enabled = state.draft.isNotBlank() && state.status == ConnectionStatus.CONNECTED,
+                        enabled = state.draft.isNotBlank() && state.status == ConnectionStatus.CONNECTED && !state.changingModel,
                         modifier = Modifier.size(48.dp).clip(CircleShape).background(if (state.draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest),
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = if (state.draft.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -498,6 +573,7 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
 
 @Composable
 private fun SettingsDialog(state: HermesUiState, viewModel: HermesViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -506,7 +582,8 @@ private fun SettingsDialog(state: HermesUiState, viewModel: HermesViewModel, onD
             Column {
                 Text(state.endpointText, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                Text("Authentication is stored in Android Keystore. This app requests a short-lived WebSocket ticket and does not expose tokens in the socket URL.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Your sign-in is stored securely on this phone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)) }) { Text("Notification settings") }
                 if (state.statusText.isNotBlank()) {
                     Spacer(Modifier.height(12.dp))
                     Text(state.statusText, style = MaterialTheme.typography.labelMedium, color = if (state.status == ConnectionStatus.ERROR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)

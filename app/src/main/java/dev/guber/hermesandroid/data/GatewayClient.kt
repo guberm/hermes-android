@@ -46,6 +46,9 @@ class GatewayClient(
         fun onReplayGap(sessionId: String) {}
         fun onSessionInterrupted() {}
         fun onRpcError(method: String, error: GatewayError) {}
+        fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String) {}
+        fun onModelChanged(model: String, confirmation: String?) {}
+        fun onSessionModel(model: String, provider: String) {}
     }
 
     companion object {
@@ -73,17 +76,19 @@ class GatewayClient(
     private var manuallyClosed = true
     private var activeSession: SessionIdentity? = null
     private var replayEpoch: String? = null
+    @Volatile private var latestSessionRequest: Long? = null
 
     suspend fun connect(endpoint: GatewayEndpoint, auth: AuthSession): Result<Unit> = withContext(Dispatchers.IO) {
-        resetTransport()
-        synchronized(this@GatewayClient) {
+        val generation = synchronized(this@GatewayClient) {
+            resetTransport()
             manuallyClosed = false
             endpointForReconnect = endpoint
             authForReconnect = auth
             reconnectAttempt = 0
+            generationGate.begin()
         }
         listener?.onStatus(ConnectionStatus.CONNECTING, "Requesting a short-lived gateway ticket…")
-        openTransport(endpoint, auth)
+        openTransport(endpoint, auth, generation)
     }
 
     fun close() {
@@ -110,15 +115,26 @@ class GatewayClient(
         sendRpc("session.list", JSONObject().put("limit", limit))
     }
 
+    fun requestModels(runtimeSessionId: String? = null) {
+        sendRpc("model.options", JSONObject().apply {
+            if (runtimeSessionId != null) put("session_id", runtimeSessionId)
+            put("include_unconfigured", false)
+        })
+    }
+
+    fun selectModel(runtimeSessionId: String, model: GatewayModel, confirmed: Boolean = false) {
+        sendRpc("config.set", modelSelectionParams(runtimeSessionId, model, confirmed))
+    }
+
     fun createSession(title: String? = null) {
-        sendRpc("session.create", sessionCreateParams(title))
+        latestSessionRequest = sendRpc("session.create", sessionCreateParams(title))
     }
 
     /** The argument is always the durable stored ID, never a runtime session ID. */
     fun resumeSession(storedSessionId: String) {
         if (storedSessionId.isBlank()) return
         activeSession = SessionIdentity(storedSessionId)
-        sendRpc("session.resume", sessionResumeParams(storedSessionId))
+        latestSessionRequest = sendRpc("session.resume", sessionResumeParams(storedSessionId))
     }
 
     fun resumeActiveSession() {
@@ -173,7 +189,10 @@ class GatewayClient(
     private fun sendRpc(method: String, params: JSONObject = JSONObject()): Long? {
         val ws = synchronized(this) { socket }
         val id = nextId.getAndIncrement()
-        if (ws == null) return null
+        if (ws == null) {
+            listener?.onRpcError(method, GatewayError(message = "Gateway is offline; reconnect and try again", retryable = true))
+            return null
+        }
         pending[id] = method
         if (!ws.send(jsonRpcRequest(id, method, params))) {
             pending.remove(id)
@@ -183,10 +202,20 @@ class GatewayClient(
         return id
     }
 
-    private suspend fun openTransport(endpoint: GatewayEndpoint, auth: AuthSession): Result<Unit> {
+    private suspend fun openTransport(endpoint: GatewayEndpoint, auth: AuthSession, generation: Long): Result<Unit> {
+        // Callers reserve the generation before scheduling work or awaiting a ticket.
+        if (!isCurrent(generation, null)) return Result.failure(IllegalStateException("Obsolete gateway connection"))
         val ticketResult = ticketProvider.mint(endpoint, auth.accessToken)
+        if (!isCurrent(generation, null)) {
+            return Result.failure(IllegalStateException("Obsolete gateway connection"))
+        }
         if (ticketResult.isFailure) {
             val error = ticketResult.exceptionOrNull() ?: IllegalStateException("Unable to mint a gateway ticket")
+            if (error is GatewayHttpException && error.statusCode == 401) {
+                listener?.onStatus(ConnectionStatus.CONNECTING, "Renewing sign-in…")
+                listener?.onRpcError("authentication", GatewayError(code = 401, message = "Sign-in needs to be renewed"))
+                return Result.failure(error)
+            }
             listener?.onStatus(ConnectionStatus.ERROR, error.message ?: "Unable to mint a gateway ticket")
             scheduleReconnect()
             return Result.failure(error)
@@ -199,18 +228,12 @@ class GatewayClient(
             // ticket is a query parameter; keep the public gateway URL and auth boundary intact.
             .url(requestUrl)
             .build()
-        val generation = synchronized(this) {
-            if (manuallyClosed) return Result.failure(IllegalStateException("Gateway connection was closed"))
-            generationGate.begin().also {
-                socket = null
-                decoder.reset()
-                pending.clear()
-                lastReadMillis = System.currentTimeMillis()
-            }
-        }
         val webSocket = webSocketFactory.newWebSocket(request, socketListener(generation))
         synchronized(this) {
-            if (generationGate.isCurrent(generation) && !manuallyClosed) socket = webSocket
+            if (generationGate.isCurrent(generation) && !manuallyClosed) {
+                socket = webSocket
+                lastReadMillis = System.currentTimeMillis()
+            }
             else webSocket.close(1000, "Obsolete gateway generation")
         }
         scheduleTransportTimers(generation)
@@ -238,6 +261,7 @@ class GatewayClient(
 
     private fun scheduleTransportTimers(generation: Long) {
         synchronized(this) {
+            if (!isCurrent(generation, null) || manuallyClosed) return
             heartbeat?.cancel(false)
             readWatchdog?.cancel(false)
             heartbeat = scheduler.scheduleWithFixedDelay({
@@ -267,16 +291,19 @@ class GatewayClient(
             }
             reconnectAttempt += 1
             delay = next
+            val generation = generationGate.begin()
             listener?.onStatus(ConnectionStatus.CONNECTING, "Gateway disconnected - reconnecting in ${delay / 1_000}s")
             reconnect = scheduler.schedule({
                 val endpoint: GatewayEndpoint
                 val auth: AuthSession
                 synchronized(this) {
+                    if (!isCurrent(generation, null) || manuallyClosed) return@schedule
+                    reconnect = null
                     endpoint = endpointForReconnect ?: return@schedule
                     auth = authForReconnect ?: return@schedule
                 }
                 reconnectScope.launch {
-                    openTransport(endpoint, auth)
+                    openTransport(endpoint, auth, generation)
                 }
             }, delay, TimeUnit.MILLISECONDS)
         }
@@ -326,6 +353,7 @@ class GatewayClient(
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             if (!isCurrent(generation, webSocket)) return
+            webSocket.close(code, null)
             listener?.onStatus(ConnectionStatus.DISCONNECTED, "Gateway closed the channel ($code)")
         }
 
@@ -370,6 +398,10 @@ class GatewayClient(
         if (!message.has("id")) return
         val id = message.optLong("id", -1)
         val method = pending.remove(id) ?: "unknown"
+        if (method == "session.create" || method == "session.resume") {
+            if (id != latestSessionRequest) return
+            latestSessionRequest = null
+        }
         val errorJson = message.optJSONObject("error")
         if (errorJson != null) {
             listener?.onRpcError(
@@ -391,6 +423,7 @@ class GatewayClient(
                 if (identity != null) {
                     activeSession = identity
                     listener?.onSessionReady(identity, parseMessages(result.optJSONArray("messages") ?: JSONArray()))
+                    result.optJSONObject("info")?.let { listener?.onSessionModel(it.optionalString("model"), it.optionalString("provider")) }
                     identity.runtimeSessionId?.let {
                         requestReplay(it)
                         requestPendingApprovals(it)
@@ -398,6 +431,12 @@ class GatewayClient(
                 }
             }
             "session.interrupt" -> listener?.onSessionInterrupted()
+            "model.options" -> listener?.onModels(parseModelOptions(result), result.optionalString("model"), result.optionalString("provider"))
+            "config.set" -> if (result.optString("key") == "model") {
+                val confirmation = if (result.optBoolean("confirm_required"))
+                    result.optionalString("confirm_message", "warning").ifBlank { "Confirm this model change?" } else null
+                listener?.onModelChanged(result.optionalString("value"), confirmation)
+            }
             "approval.pending" -> listener?.onPendingApprovals(parsePendingApprovals(result))
             "image.attach_bytes", "file.attach" -> listener?.onAttachment(
                 AttachmentReceipt(
@@ -441,7 +480,7 @@ class GatewayClient(
     }
 
     private fun parsePendingApprovals(result: JSONObject): List<ApprovalRequest> {
-        val value = result.opt("pending") ?: result.opt("approval")
+        val value = result.opt("approvals") ?: result.opt("pending") ?: result.opt("approval")
         val objects = when (value) {
             is JSONObject -> listOf(value)
             is JSONArray -> (0 until value.length()).mapNotNull { value.optJSONObject(it) }
@@ -466,7 +505,7 @@ class GatewayClient(
     private fun parseMessages(array: JSONArray): List<ChatMessage> = buildList {
         for (index in 0 until array.length()) {
             val item = array.optJSONObject(index) ?: continue
-            val text = contentText(item.opt("content"))
+            val text = contentText(item.opt("text")).ifBlank { contentText(item.opt("content")) }
             if (text.isBlank()) continue
             add(ChatMessage(item.optionalString("id", "message_id").ifBlank { "history-$index" }, item.optString("role", "assistant"), text))
         }
