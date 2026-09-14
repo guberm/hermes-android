@@ -2,15 +2,19 @@ package dev.guber.hermesandroid.data
 
 import org.json.JSONObject
 
-data class CompletedReply(val sessionId: String, val title: String, val text: String)
+data class CompletedReply(val sessionId: String, val title: String, val text: String, val remaining: Int = 1)
 
 class ReplyTracker {
     private val pending = mutableMapOf<String, CompletedReply>()
     val isWaiting: Boolean @Synchronized get() = pending.isNotEmpty()
 
     @Synchronized
-    fun begin(session: SessionIdentity, title: String) {
-        session.runtimeSessionId?.let { pending[it] = CompletedReply(session.storedSessionId, title, "") }
+    fun begin(session: SessionIdentity, title: String, append: Boolean = false) {
+        session.runtimeSessionId?.let { runtime ->
+            val current = pending[runtime]
+            pending[runtime] = if (append && current != null) current.copy(remaining = current.remaining + 1)
+                else CompletedReply(session.storedSessionId, title, "")
+        }
     }
 
     @Synchronized
@@ -36,7 +40,8 @@ class ReplyTracker {
         when (event.optString("type")) {
             "message.delta", "message.interim" -> pending[runtime] = reply.copy(text = (reply.text + text).take(512))
             "message.complete" -> {
-                pending.remove(runtime)
+                if (reply.remaining > 1) pending[runtime] = reply.copy(text = "", remaining = reply.remaining - 1)
+                else pending.remove(runtime)
                 return reply.copy(text = text.ifBlank { reply.text }.ifBlank { "Your response is ready." }.take(512))
             }
         }

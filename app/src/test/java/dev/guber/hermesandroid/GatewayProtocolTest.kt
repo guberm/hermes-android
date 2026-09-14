@@ -25,6 +25,25 @@ import org.junit.Test
 
 class GatewayProtocolTest {
     @Test
+    fun followUpsUseExplicitQueueAndNonInterruptingSteer() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.followUp("runtime", "next", true)
+            val queue = socket.sentRequest("prompt.submit").getJSONObject("params")
+            assertTrue(queue.getBoolean("queued"))
+            assertEquals("next", queue.getString("text"))
+            client.followUp("runtime", "correction", false)
+            val steer = socket.sentRequest("session.steer").getJSONObject("params")
+            assertEquals("runtime", steer.getString("session_id"))
+            assertEquals("correction", steer.getString("text"))
+            assertFalse(steer.has("queued"))
+        } finally { client.shutdown() }
+    }
+    @Test
     fun expiredBearerRequestsRefreshInsteadOfRetryingTheSameCredential() = runBlocking {
         val errors = mutableListOf<dev.guber.hermesandroid.data.GatewayError>()
         val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ ->

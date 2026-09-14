@@ -40,12 +40,14 @@ class GatewayClient(
         fun onReady(replayEpoch: String?) {}
         fun onSessions(sessions: List<SessionSummary>) {}
         fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>) {}
+        fun onSessionActivity(session: SessionIdentity, running: Boolean) {}
         fun onEvent(params: JSONObject) {}
         fun onAttachment(receipt: AttachmentReceipt) {}
         fun onPendingApprovals(approvals: List<ApprovalRequest>) {}
         fun onReplayGap(sessionId: String) {}
         fun onSessionInterrupted() {}
         fun onRpcError(method: String, error: GatewayError) {}
+        fun onFollowUpResult(method: String, result: JSONObject) {}
         fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String) {}
         fun onModelChanged(model: String, confirmation: String?) {}
         fun onSessionModel(model: String, provider: String) {}
@@ -145,6 +147,11 @@ class GatewayClient(
         sendRpc("prompt.submit", promptSubmitParams(sessionId, text))
     }
 
+    fun followUp(sessionId: String, text: String, queued: Boolean) {
+        if (queued) sendRpc("prompt.submit", promptSubmitParams(sessionId, text).put("queued", true), "prompt.queue")
+        else sendRpc("session.steer", JSONObject().put("session_id", sessionId).put("text", text))
+    }
+
     fun interruptActiveSession(): Boolean {
         val runtimeId = activeSession?.runtimeSessionId ?: return false
         return sendRpc("session.interrupt", sessionInterruptParams(runtimeId)) != null
@@ -186,17 +193,17 @@ class GatewayClient(
         sendRpc("approval.pending", approvalPendingParams(runtimeSessionId))
     }
 
-    private fun sendRpc(method: String, params: JSONObject = JSONObject()): Long? {
+    private fun sendRpc(method: String, params: JSONObject = JSONObject(), responseMethod: String = method): Long? {
         val ws = synchronized(this) { socket }
         val id = nextId.getAndIncrement()
         if (ws == null) {
-            listener?.onRpcError(method, GatewayError(message = "Gateway is offline; reconnect and try again", retryable = true))
+            listener?.onRpcError(responseMethod, GatewayError(message = "Gateway is offline; reconnect and try again", retryable = true))
             return null
         }
-        pending[id] = method
+        pending[id] = responseMethod
         if (!ws.send(jsonRpcRequest(id, method, params))) {
             pending.remove(id)
-            listener?.onRpcError(method, GatewayError(message = "Gateway socket rejected the request", retryable = true))
+            listener?.onRpcError(responseMethod, GatewayError(message = "Gateway socket rejected the request", retryable = true))
             return null
         }
         return id
@@ -416,6 +423,7 @@ class GatewayClient(
         }
         val result = message.optJSONObject("result") ?: JSONObject()
         when (method) {
+            "prompt.queue", "session.steer" -> listener?.onFollowUpResult(method, result)
             "session.list" -> listener?.onSessions(parseSessions(result.optJSONArray("sessions") ?: JSONArray()))
             "session.create", "session.resume" -> {
                 val fallback = if (method == "session.resume") activeSession?.storedSessionId else null
@@ -423,6 +431,7 @@ class GatewayClient(
                 if (identity != null) {
                     activeSession = identity
                     listener?.onSessionReady(identity, parseMessages(result.optJSONArray("messages") ?: JSONArray()))
+                    if (result.has("running") || method == "session.create") listener?.onSessionActivity(identity, result.optBoolean("running"))
                     result.optJSONObject("info")?.let { listener?.onSessionModel(it.optionalString("model"), it.optionalString("provider")) }
                     identity.runtimeSessionId?.let {
                         requestReplay(it)

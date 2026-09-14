@@ -9,12 +9,16 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material.icons.filled.PushPin
@@ -33,8 +37,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -118,6 +126,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val model = (application as HermesApplication).viewModel
         intent.getStringExtra("session_id")?.let(model::openSession)
         intent.removeExtra("session_id")
@@ -158,6 +167,7 @@ private fun SetupScreen(state: HermesUiState, viewModel: HermesViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 42.dp),
         verticalArrangement = Arrangement.Center,
@@ -241,6 +251,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     var showSettings by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var showChatMenu by remember { mutableStateOf(false) }
+    var showSendDefaults by remember { mutableStateOf(false) }
     val chatContext = LocalContext.current
     val exportChat = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) scope.launch {
@@ -291,6 +302,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         Box {
                             IconButton(onClick = { showChatMenu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
                             DropdownMenu(expanded = showChatMenu, onDismissRequest = { showChatMenu = false }) {
+                                DropdownMenuItem(text = { Text("Default send mode") }, onClick = { showChatMenu = false; showSendDefaults = true })
                                 DropdownMenuItem(text = { Text("Refresh chats") }, onClick = { showChatMenu = false; viewModel.refreshSessions() })
                                 DropdownMenuItem(text = { Text("Copy transcript") }, enabled = state.messages.isNotEmpty(), onClick = {
                                     showChatMenu = false
@@ -306,7 +318,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                 )
             },
             bottomBar = { Composer(state, viewModel) },
-            contentWindowInsets = WindowInsets.navigationBars,
+            contentWindowInsets = WindowInsets.safeDrawing,
         ) { padding ->
             Conversation(
                 state = state,
@@ -316,6 +328,20 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
         }
     }
     BackHandler(enabled = drawerState.isOpen, onBack = closeDrawer)
+    if (showSendDefaults) AlertDialog(
+        onDismissRequest = { showSendDefaults = false }, title = { Text("Default send mode") },
+        text = { Column {
+            Text("Used by Send while the agent is working. Long-press Send to choose once.")
+            TextButton(onClick = { viewModel.setDefaultQueue(false); showSendDefaults = false }) {
+                Text("Steer — guide current response")
+                if (!state.defaultQueue) Icon(Icons.Default.CheckCircle, "Selected")
+            }
+            TextButton(onClick = { viewModel.setDefaultQueue(true); showSendDefaults = false }) {
+                Text("Queue — send after response")
+                if (state.defaultQueue) Icon(Icons.Default.CheckCircle, "Selected")
+            }
+        } }, confirmButton = { TextButton(onClick = { showSendDefaults = false }) { Text("Close") } },
+    )
     if (showSettings) {
         SettingsDialog(state, viewModel, onDismiss = { showSettings = false })
     }
@@ -382,7 +408,7 @@ private fun ConnectionPill(state: HermesUiState) {
 private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (SessionSummary) -> Unit, onPin: (SessionSummary) -> Unit, onClose: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     val sessions = visibleSessions(state.sessions, state.pinnedSessions, query)
-    ModalDrawerSheet {
+    ModalDrawerSheet(windowInsets = WindowInsets.safeDrawing) {
         Column(Modifier.fillMaxSize().padding(top = 18.dp)) {
             Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
@@ -595,9 +621,11 @@ private fun ApprovalCard(request: ApprovalRequest, viewModel: HermesViewModel) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
     val context = LocalContext.current
+    var showSendOptions by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         runCatching {
@@ -607,7 +635,24 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
         }.onFailure { viewModel.reportError(it.message ?: "Could not read attachment") }
     }
     Surface(shadowElevation = 8.dp, tonalElevation = 2.dp) {
-        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 9.dp)) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 9.dp)) {
+            val queued = state.queuedPrompts.filter { it.sessionId == state.activeSessionId }
+            if (queued.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(queued, key = { it.id }) { item ->
+                    val sending = state.sendingQueuedId == item.id
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text(item.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            item.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                            Row {
+                                TextButton(onClick = { viewModel.cancelQueued(item.id) }, enabled = !sending) { Text("Cancel") }
+                                TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text("Send now") }
+                            }
+                        }
+                    }
+                }
+            }
             if (state.statusText.isNotBlank() && state.statusText != "Connected") {
                 Text(state.statusText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
             }
@@ -632,13 +677,21 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                     ) {
                         Icon(Icons.Default.Close, contentDescription = "Stop streaming", tint = MaterialTheme.colorScheme.onErrorContainer)
                     }
-                } else {
-                    IconButton(
-                        onClick = viewModel::submitPrompt,
-                        enabled = state.draft.isNotBlank() && state.status == ConnectionStatus.CONNECTED && !state.changingModel,
-                        modifier = Modifier.size(48.dp).clip(CircleShape).background(if (state.draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest),
-                    ) {
+                }
+                Box {
+                    Box(Modifier.size(48.dp).clip(CircleShape)
+                        .background(if (state.draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .combinedClickable(
+                            enabled = !state.sendingFollowUp && !state.changingModel,
+                            role = Role.Button, onLongClickLabel = "Send options",
+                            onClick = { if (state.draft.isBlank()) showSendOptions = true else viewModel.submitPrompt() },
+                            onLongClick = { showSendOptions = true }), contentAlignment = Alignment.Center) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = if (state.draft.isNotBlank()) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(expanded = showSendOptions, onDismissRequest = { showSendOptions = false }) {
+                        val canSend = state.draft.isNotBlank() && state.activeRuntimeSessionId != null && state.status == ConnectionStatus.CONNECTED && !state.sendingFollowUp
+                        DropdownMenuItem(text = { Text(if (state.defaultQueue) "Steer" else "Steer (default)") }, enabled = canSend, onClick = { showSendOptions = false; viewModel.sendFollowUp(false) })
+                        DropdownMenuItem(text = { Text(if (state.defaultQueue) "Queue (default)" else "Queue") }, enabled = canSend, onClick = { showSendOptions = false; viewModel.sendFollowUp(true) })
                     }
                 }
             }

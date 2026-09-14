@@ -7,6 +7,29 @@ import org.junit.Test
 
 class ModelAndReplyTest {
     @Test
+    fun localQueueSurvivesRestartWithoutReusingRuntimeOrLosingOrder() {
+        val items = listOf(QueuedPrompt("one", "stored", "First", "Chat", "old-runtime"),
+            QueuedPrompt("two", "stored", "Second", "Chat", error = "Delivery not confirmed"))
+        val restored = decodeQueue(encodeQueue(items))
+        assertEquals(listOf("one", "two"), restored.map { it.id })
+        assertEquals("First", restored.first().text)
+        assertNull(restored.first().runtimeId)
+        assertEquals("Delivery not confirmed", restored.last().error)
+        assertTrue(decodeQueue("invalid").isEmpty())
+    }
+    @Test
+    fun queuedReplyKeepsBackgroundWaitingAfterCurrentReplyCompletes() {
+        val tracker = ReplyTracker()
+        val session = SessionIdentity("stored", "runtime")
+        tracker.begin(session, "Chat")
+        tracker.begin(session, "Chat", append = true)
+        val event = JSONObject("""{"type":"message.complete","session_id":"runtime","payload":{"text":"Done"}}""")
+        assertNotNull(tracker.receive(event))
+        assertTrue(tracker.isWaiting)
+        assertNotNull(tracker.receive(event))
+        assertFalse(tracker.isWaiting)
+    }
+    @Test
     fun modelOptionsKeepConfiguredProvidersAndDisableUnavailableModels() {
         val result = JSONObject("""{"providers":[{"slug":"openai-codex","name":"Codex","authenticated":true,"models":["gpt-5","gpt-6"],"unavailable_models":["gpt-6"]},{"slug":"other","authenticated":false,"models":["unconfigured"]}]}""")
         val models = parseModelOptions(result)

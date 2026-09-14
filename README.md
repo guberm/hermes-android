@@ -84,3 +84,11 @@ A live integration test requires a user-authorized gateway URL and sign-in. No b
 - Search loaded chat titles and previews from the drawer. This is local filtering, not a server-wide message search.
 - Select text or use **Copy message**. **Chat actions** also provides **Copy transcript**, **Export chat (.txt)**, and **Refresh chats**.
 - Export saves the loaded conversation through Android's system document picker.
+
+## Sending while the agent is working (0.1.4)
+
+Set **Chat actions → Default send mode** to **Steer** (guide the current response) or **Queue** (run after the current response). The preference is saved locally. A regular Send uses this default during a running turn; long-press Send offers a one-time Steer/Queue choice and marks the default without changing it. Stop remains a separate button.
+
+Steer uses `session.steer`. Queue keeps the message on this device until the current response finishes, showing a **QUEUED** card with **Cancel** and **Send now**. Cancel removes an unsent message; Send now uses Steer during a response or starts a normal turn when idle. Automatic dispatch uses `prompt.submit` with `queued=true` to avoid interrupting a turn that started in the meantime. The card is removed only after acknowledgement; rejected requests remain available with an error. Queued text is saved in private app storage, scoped by gateway URL. After a force-stop/restart, reopen the chat to resume its queue. If no session exists yet, regular Send creates a conversation first.
+
+The composer and drawer respect system navigation/keyboard insets. The activity uses explicit resize behavior so Android's window panning does not duplicate Compose's keyboard padding.
