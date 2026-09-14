@@ -1,12 +1,13 @@
 package dev.guber.hermesandroid
 
 import dev.guber.hermesandroid.data.ChatMessage
+import dev.guber.hermesandroid.data.SessionSummary
 import dev.guber.hermesandroid.data.ToolActivity
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.finishTurn
-import dev.guber.hermesandroid.ui.visibleSessions
 import dev.guber.hermesandroid.ui.insertSubmittedMessage
-import dev.guber.hermesandroid.data.SessionSummary
+import dev.guber.hermesandroid.ui.mergeToolActivity
+import dev.guber.hermesandroid.ui.visibleSessions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,6 +23,7 @@ class ConversationStateTest {
         val alreadyComplete = insertSubmittedMessage(listOf(earlyAnswer.copy(isStreaming = false)), null, "First prompt")
         assertEquals(listOf("First prompt", "New response"), alreadyComplete.map { it.text })
     }
+
     @Test
     fun sessionSearchKeepsPinsFirstAndPreservesServerOrder() {
         val sessions = listOf(
@@ -34,6 +36,7 @@ class ConversationStateTest {
         assertEquals(sessions, visibleSessions(sessions, emptySet(), ""))
         assertTrue(visibleSessions(sessions, setOf("pin"), "no match").isEmpty())
     }
+
     @Test
     fun finishedTurnStopsThinkingAndPreservesPartialResponse() {
         val state = HermesUiState(
@@ -46,5 +49,14 @@ class ConversationStateTest {
         assertEquals("Partial reply", state.messages.single().text)
         assertTrue(state.tools.single().complete)
         assertEquals("Response stopped", state.statusText)
+    }
+
+    @Test
+    fun reasoningUpdatesKeepTheEntireGatewaySummary() {
+        val first = ToolActivity("reasoning", "Thinking", "Checking logs")
+        val updated = mergeToolActivity(first, "Checking new errors", complete = false)
+        assertEquals("Checking logs\nChecking new errors", updated.detail)
+        assertEquals("Checking logs\nChecking new errors", mergeToolActivity(updated, "", complete = true).detail)
+        assertTrue(mergeToolActivity(updated, "", complete = true).complete)
     }
 }

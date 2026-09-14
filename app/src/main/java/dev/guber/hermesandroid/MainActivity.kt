@@ -519,9 +519,12 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
         if (state.messages.isEmpty() && state.tools.isEmpty()) {
             item { EmptyConversation(statusText = state.statusText) }
         }
-        items(state.messages, key = { it.id }) { MessageBubble(it) }
+        val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
+        val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
+        items(messagesBeforeActivity, key = { it.id }) { MessageBubble(it) }
         items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
         items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
+        finalReply?.let { item(key = it.id) { MessageBubble(it) } }
         if (state.attachments.isNotEmpty()) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -589,19 +592,26 @@ private fun copyText(context: Context, text: String) {
 
 @Composable
 private fun ToolCard(tool: ToolActivity) {
+    var expanded by remember(tool.id) { mutableStateOf(true) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), shape = RoundedCornerShape(14.dp)) {
-        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.Top) {
-            Box(Modifier.size(28.dp).clip(RoundedCornerShape(9.dp)).background(MaterialTheme.colorScheme.tertiaryContainer), contentAlignment = Alignment.Center) {
-                Text("⌁", color = MaterialTheme.colorScheme.onTertiaryContainer, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(tool.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.width(7.dp))
-                    Text(if (tool.complete) "done" else "running", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(13.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Box(Modifier.size(28.dp).clip(RoundedCornerShape(9.dp)).background(MaterialTheme.colorScheme.tertiaryContainer), contentAlignment = Alignment.Center) {
+                    Text("⌁", color = MaterialTheme.colorScheme.onTertiaryContainer, fontWeight = FontWeight.Bold)
                 }
-                if (tool.detail.isNotBlank()) Text(tool.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(tool.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.width(7.dp))
+                        Text(if (tool.complete) "done" else "running", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Text(if (expanded) "Hide" else "Show", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            if (expanded && tool.detail.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(tool.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

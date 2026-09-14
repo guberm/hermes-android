@@ -83,6 +83,16 @@ internal fun HermesUiState.finishTurn(statusText: String = this.statusText): Her
         tools = tools.map { it.copy(complete = true) },
     )
 
+internal fun mergeToolActivity(previous: ToolActivity, detail: String, complete: Boolean): ToolActivity {
+    val nextDetail = when {
+        detail.isBlank() -> previous.detail
+        previous.id != "reasoning" || detail == previous.detail -> detail
+        detail.startsWith(previous.detail) -> detail
+        else -> "${previous.detail}\n$detail"
+    }
+    return previous.copy(detail = nextDetail, complete = previous.complete || complete)
+}
+
 class HermesViewModel(application: Application) : AndroidViewModel(application), GatewayClient.Listener {
     private val store = SecureCredentialStore(application)
     private val authApi = AuthApi()
@@ -614,9 +624,10 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private fun updateTool(id: String, name: String, detail: String, complete: Boolean) {
         _state.update { current ->
             val existing = current.tools.indexOfFirst { it.id == id }
-            val updated = ToolActivity(id, name, detail, complete)
-            if (existing < 0) current.copy(tools = current.tools + updated)
-            else current.copy(tools = current.tools.toMutableList().also { list -> list[existing] = updated })
+            if (existing < 0) current.copy(tools = current.tools + ToolActivity(id, name, detail, complete))
+            else current.copy(tools = current.tools.toMutableList().also { list ->
+                list[existing] = mergeToolActivity(list[existing], detail, complete).copy(name = name)
+            })
         }
     }
 
