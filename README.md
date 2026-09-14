@@ -1,8 +1,61 @@
-# Hermes Android companion
+# Hermes Android
 
 A native Kotlin + Jetpack Compose client for an authenticated Hermes Gateway. The app is intentionally a companion surface: sessions and tools execute on the Gateway, while Android provides connection setup, streaming chat, approvals, and attachment staging.
 
-## What is implemented
+**[Download the latest APK](https://github.com/guberm/hermes-android/releases/latest)** · [Release notes](https://github.com/guberm/hermes-android/releases) · [Report an issue](https://github.com/guberm/hermes-android/issues)
+
+## Install and connect
+
+Requires **Android 8.0 or newer** and an authenticated Hermes Gateway with native PKCE sign-in enabled.
+
+1. Download the `hermes-android-…-release.apk` asset from the latest release.
+2. Install the APK. If Android asks, allow installation from the browser or file manager you used.
+3. Enter your Gateway's HTTPS address and tap **Sign in with Hermes**. Complete sign-in in the browser and return to the app.
+4. Allow notifications to receive an alert when a reply is ready.
+5. Open **Sessions** to select an existing chat or start a **New conversation**.
+
+Install subsequent releases over the existing app to retain sign-in and preferences. Older candidate/debug builds with a different signing key require a reinstall, which removes local sign-in, preferences, pins, and pending local messages. History already saved on the Gateway remains available after signing in again.
+
+## Features
+
+- **Conversations:** create chats, load history, stream replies, follow tool progress, and answer approval requests.
+- **Pins and search:** pin chats to the top and filter loaded titles and previews. Pins are saved locally for each Gateway.
+- **Models:** use **Choose model** in the chat header to search models supplied by the Gateway and change the current conversation's model.
+- **Steer and Queue:** guide a running response or save a message to send after it finishes.
+- **Notifications:** receive reply alerts and tap them to open the conversation.
+- **Copy and export:** long-press a message for **Copy message**; use **Chat actions** to copy or export the loaded transcript.
+- **Attachments:** stage images and files on the Gateway, up to 25 MiB per attachment.
+- **Appearance:** switch between Dark and Light in **Connection settings**. The preference is saved on this device.
+- **Layout:** content respects the status bar, display cutouts, navigation bar, and keyboard. Close the session drawer with its close button or system Back.
+
+## Sending messages
+
+Set **Chat actions → Default send mode** to **Steer** or **Queue**. Ordinary Send uses this preference while the agent is working. Long-press **Send** to choose once without changing the default. **Stop streaming** remains a separate button.
+
+| Action | Behavior |
+| --- | --- |
+| **Steer** | Send guidance to the current response; acceptance depends on the Gateway and running agent. |
+| **Queue** | Keep the message on this device until the current response finishes, then submit it. |
+| **Cancel** on a queued card | Remove the unsent message from the local queue. |
+| **Send now** on a queued card | Use Steer during a response, or start a new turn when idle. |
+
+Unsent messages appear as **QUEUED** cards. A card remains visible while submission is in progress and disappears after acceptance. Rejected requests remain available with an error. If delivery cannot be confirmed after a connection loss, check the chat before retrying to avoid duplicates.
+
+Pending messages are saved in private app storage for that Gateway. After a force-stop or restart, reopen the chat to resume its queue. Regular Send creates a conversation if none exists yet.
+
+## Chat actions and appearance
+
+Long-press a message and choose **Copy message**. There is no permanent Copy button. **Chat actions → Copy transcript** and **Export chat (.txt)** use the currently loaded conversation; export opens Android's document picker. **Refresh chats** reloads the session list. Drawer search filters loaded titles and previews, not all server messages.
+
+Use **Connection settings → Dark mode** to switch between Dark and Light. The selection survives restart, and status-bar icons follow the selected theme.
+
+## Notifications
+
+Allow notifications when Android asks, or use **Connection settings → Notification settings**. While a response started in Android is pending, a quiet **Hermes is working** notification keeps the connection active after leaving the app. Completion produces a reply notification with sound, subject to Android's channel and Do Not Disturb settings.
+
+Notifications use the authenticated Gateway connection, not a separate push backend. The app does not monitor every unrelated server conversation when stopped. Disconnecting or signing out ends the local wait without canceling server work.
+
+## Authentication and protocol
 
 - Native RFC 8252 PKCE sign-in with a loopback callback on `127.0.0.1`.
 - Android Keystore AES/GCM storage for the gateway origin and bearer/refresh tokens.
@@ -11,7 +64,7 @@ A native Kotlin + Jetpack Compose client for an authenticated Hermes Gateway. Th
 - Gateway ready, heartbeat, session list/create/resume, prompt streaming, tool progress, approvals, replay watermark, and truncated-replay recovery.
 - Image uploads through `image.attach_bytes` and non-image files through `file.attach` data URLs. The Android filesystem path is never sent to Hermes as a host path.
 - Explicit offline/error/unsupported states. Local Android tool execution and unauthenticated Desktop endpoints are not exposed.
-- Original vector launcher mark and dark Material 3 interface.
+- Original vector launcher mark and Material 3 interface with dark and light themes.
 - Chat history accepts the Gateway's `text` format and legacy `content` blocks; late session responses cannot replace a newer selection.
 - Searchable, server-provided model picker, with session-only changes and server-requested confirmation.
 - Reply notifications with sound and a temporary foreground service while an Android-started response is pending. Tapping a notification opens its conversation.
@@ -33,7 +86,7 @@ export ANDROID_HOME="$HOME/.local/share/android-sdk"
 ./gradlew :app:assembleDebug
 ```
 
-The debug artifact is an alpha/debug build and is not a production release. For a local upgrade-safe release build, keep the keystore outside this repository and provide it only through environment variables:
+The debug artifact is `app/build/outputs/apk/debug/app-debug.apk` and uses a different signing identity from official releases. For a local upgrade-safe release build, keep the keystore outside this repository and provide it only through environment variables:
 
 ```bash
 export HERMES_KEYSTORE=/private/path/hermes-release.jks
@@ -46,7 +99,7 @@ The Gradle configuration only enables release signing when all three variables a
 
 ### GitHub signed builds
 
-The **Signed APK** workflow runs on pushes to `main` and through **Run workflow**. It runs unit tests and release lint, builds the signed APK, verifies its certificate, and uploads only the APK as an Actions artifact.
+The [Signed APK workflow](.github/workflows/signed-apk.yml) runs on pushes to `main` and through **Run workflow**. It runs unit tests and release lint, builds the signed APK, verifies its certificate, and uploads only the APK as an Actions artifact. Publishing a GitHub Release is a separate step.
 
 Repository Actions secrets: `HERMES_KEYSTORE_BASE64`, `HERMES_KEYSTORE_PASSWORD`, `HERMES_KEY_PASSWORD`. Key alias: `hermes`.
 
@@ -67,32 +120,21 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 & "$stage\gradlew.bat" -p $stage :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --console=plain --max-workers=2
 ```
 
-### Notifications
-
-Allow notifications when Android asks, or use **Connection settings → Notification settings**. While a response started in Android is pending, a quiet **Hermes is working** notification keeps the connection active after leaving the app. The reply replaces it with a normal sound-enabled notification. Android's Do Not Disturb and channel settings still apply.
-
-This uses the authenticated Gateway connection, not a push backend. It does not monitor every unrelated server conversation when the application is stopped. Disconnecting/signing out ends the local wait; it does not cancel work on the server.
-
 ## Verification boundaries
+
+Version **0.1.5** passed 38 JVM tests and release lint. Its signed APK was installed on a Pixel 7 Pro and checked against a live Gateway. Device checks covered long-press message actions, theme persistence after restart, system/keyboard insets, and drawer dismissal. See [v0.1.5 device evidence](docs/evidence/DEVICE-0.1.5.md).
+
+Runnable checks require ADB and a signed-in app:
+
+```bash
+python scripts/check_drawer.py DEVICE_SERIAL
+python scripts/check_navigation_insets.py DEVICE_SERIAL
+# Focus the composer first to open the keyboard:
+python scripts/check_navigation_insets.py DEVICE_SERIAL --keyboard
+# Display a message first; this restarts the app and restores its initial theme:
+python scripts/check_message_ui.py DEVICE_SERIAL "VISIBLE_MESSAGE_TEXT"
+```
 
 Unit tests cover URL validation, HTTPS-to-WSS mapping, Hermes one-object-per-WebSocket-frame plus newline/multi-object compatibility framing, JSON-RPC request envelopes, durable/runtime session identity and replay sequencing, generation-safe reconnect policy/watchdog behavior, session interrupt/pending-approval payloads, expiry safety window, error mapping, and attachment size/data-URL behavior. They are protocol/logic tests and do not claim a live Gateway.
 
 A live integration test requires a user-authorized gateway URL and sign-in. No backend credentials are stored in this repository. Device validation requires an attached authorized device or isolated emulator; the build remains useful without one.
-# Chat conveniences (0.1.2)
-
-- Pin/unpin from the pin button on each chat row. Pinned chats appear first and persist on this device, separately for each gateway URL.
-- Search loaded chat titles and previews from the drawer. This is local filtering, not a server-wide message search.
-- Select text or use **Copy message**. **Chat actions** also provides **Copy transcript**, **Export chat (.txt)**, and **Refresh chats**.
-- Export saves the loaded conversation through Android's system document picker.
-
-## Sending while the agent is working (0.1.4)
-
-Set **Chat actions → Default send mode** to **Steer** (guide the current response) or **Queue** (run after the current response). The preference is saved locally. A regular Send uses this default during a running turn; long-press Send offers a one-time Steer/Queue choice and marks the default without changing it. Stop remains a separate button.
-
-Steer uses `session.steer`. Queue keeps the message on this device until the current response finishes, showing a **QUEUED** card with **Cancel** and **Send now**. Cancel removes an unsent message; Send now uses Steer during a response or starts a normal turn when idle. Automatic dispatch uses `prompt.submit` with `queued=true` to avoid interrupting a turn that started in the meantime. The card is removed only after acknowledgement; rejected requests remain available with an error. Queued text is saved in private app storage, scoped by gateway URL. After a force-stop/restart, reopen the chat to resume its queue. If no session exists yet, regular Send creates a conversation first.
-
-The composer and drawer respect system navigation/keyboard insets. The activity uses explicit resize behavior so Android's window panning does not duplicate Compose's keyboard padding.
-
-### Appearance and message actions
-
-Long-press a message and choose **Copy message**. The message has no permanent Copy button. Use **Connection settings → Dark mode** to switch between dark and light appearance; the selection is remembered on this device. Screen content respects the top system bar and display cutouts, and status-bar icons follow the selected theme.
