@@ -508,6 +508,7 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
@@ -536,7 +537,17 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
         }
         val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
         val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
-        items(messagesBeforeActivity, key = { it.id }) { MessageBubble(it) }
+        messagesBeforeActivity.forEach { message ->
+            if (message.role.equals("user", ignoreCase = true)) {
+                stickyHeader(key = "sticky-${message.id}") {
+                    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
+                        MessageBubble(message)
+                    }
+                }
+            } else {
+                item(key = message.id) { MessageBubble(message) }
+            }
+        }
         items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
         items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
         finalReply?.let { item(key = it.id) { MessageBubble(it) } }
