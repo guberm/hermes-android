@@ -284,11 +284,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
         drawerContent = {
             SessionDrawer(
                 state = state,
-                onPin = { session ->
-                    viewModel.togglePin(session)
-                    closeDrawer()
-                    viewModel.resumeSession(session)
-                },
+                onPin = viewModel::togglePin,
                 onClose = closeDrawer,
                 onNew = {
                     closeDrawer()
@@ -547,11 +543,11 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             }
             val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
             val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
-            messagesBeforeActivity.forEach { message ->
+            messagesBeforeActivity.forEachIndexed { index, message ->
                 if (message.role.equals("user", ignoreCase = true)) {
                     stickyHeader(key = "sticky-${message.id}") {
                         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                            MessageBubble(message)
+                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } })
                         }
                     }
                 } else {
@@ -599,7 +595,7 @@ private fun EmptyConversation(statusText: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}) {
     val context = LocalContext.current
     var showCopy by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
@@ -618,7 +614,7 @@ private fun MessageBubble(message: ChatMessage) {
                     Text(
                         text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
                         modifier = Modifier.combinedClickable(
-                            enabled = message.text.isNotBlank(), onClick = {},
+                            enabled = message.text.isNotBlank(), onClick = onClick,
                             onLongClickLabel = "Message options", onLongClick = { showCopy = true }
                         ).padding(horizontal = 16.dp, vertical = 12.dp),
                         style = MaterialTheme.typography.bodyLarge,
