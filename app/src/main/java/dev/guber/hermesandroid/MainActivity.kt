@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -95,6 +96,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -102,6 +104,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -281,7 +284,11 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
         drawerContent = {
             SessionDrawer(
                 state = state,
-                onPin = viewModel::togglePin,
+                onPin = { session ->
+                    viewModel.togglePin(session)
+                    closeDrawer()
+                    viewModel.resumeSession(session)
+                },
                 onClose = closeDrawer,
                 onNew = {
                     closeDrawer()
@@ -512,9 +519,11 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
 @Composable
 private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val itemCount = state.messages.size + state.tools.size + state.approvals.size + if (state.attachments.isNotEmpty()) 1 else 0
+    val canScrollToLatest by remember { derivedStateOf { listState.canScrollForward } }
     LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size) {
-        val count = state.messages.size + state.tools.size + state.approvals.size
-        if (count > 0) listState.scrollToItem(count - 1, Int.MAX_VALUE)
+        if (itemCount > 0) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
     }
     if (state.status == ConnectionStatus.ERROR && state.messages.isEmpty()) {
         Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -526,38 +535,48 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
         }
         return
     }
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (state.messages.isEmpty() && state.tools.isEmpty()) {
-            item { EmptyConversation(statusText = state.statusText) }
-        }
-        val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
-        val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
-        messagesBeforeActivity.forEach { message ->
-            if (message.role.equals("user", ignoreCase = true)) {
-                stickyHeader(key = "sticky-${message.id}") {
-                    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                        MessageBubble(message)
+    Box(modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (state.messages.isEmpty() && state.tools.isEmpty()) {
+                item { EmptyConversation(statusText = state.statusText) }
+            }
+            val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
+            val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
+            messagesBeforeActivity.forEach { message ->
+                if (message.role.equals("user", ignoreCase = true)) {
+                    stickyHeader(key = "sticky-${message.id}") {
+                        Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
+                            MessageBubble(message)
+                        }
+                    }
+                } else {
+                    item(key = message.id) { MessageBubble(message) }
+                }
+            }
+            items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
+            items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
+            finalReply?.let { item(key = it.id) { MessageBubble(it) } }
+            if (state.attachments.isNotEmpty()) {
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        state.attachments.takeLast(3).forEach { attachment ->
+                            AssistChip(onClick = {}, label = { Text(attachment.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }, leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) })
+                        }
                     }
                 }
-            } else {
-                item(key = message.id) { MessageBubble(message) }
             }
         }
-        items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
-        items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
-        finalReply?.let { item(key = it.id) { MessageBubble(it) } }
-        if (state.attachments.isNotEmpty()) {
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    state.attachments.takeLast(3).forEach { attachment ->
-                        AssistChip(onClick = {}, label = { Text(attachment.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }, leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) })
-                    }
-                }
+        if (canScrollToLatest) {
+            SmallFloatingActionButton(
+                onClick = { scope.launch { listState.animateScrollToItem(itemCount - 1, Int.MAX_VALUE) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            ) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll to latest message")
             }
         }
     }
