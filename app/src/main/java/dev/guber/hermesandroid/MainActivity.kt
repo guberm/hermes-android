@@ -313,6 +313,9 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         }
                     },
                     actions = {
+                        IconButton(onClick = viewModel::refreshActiveSession, enabled = state.status == ConnectionStatus.CONNECTED && state.activeRuntimeSessionId != null) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh conversation")
+                        }
                         IconButton(onClick = { showModels = true; viewModel.loadModels() }, enabled = state.status == ConnectionStatus.CONNECTED && !state.isSending) {
                             Icon(Icons.Default.Tune, contentDescription = "Choose model")
                         }
@@ -519,7 +522,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
     val itemCount = state.messages.size + state.tools.size + state.approvals.size + if (state.attachments.isNotEmpty()) 1 else 0
     val canScrollToLatest by remember { derivedStateOf { listState.canScrollForward } }
     LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size) {
-        if (itemCount > 0) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
+        if (itemCount > 0 && !listState.canScrollForward) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
     }
     if (state.status == ConnectionStatus.ERROR && state.messages.isEmpty()) {
         Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -547,7 +550,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
                 if (message.role.equals("user", ignoreCase = true)) {
                     stickyHeader(key = "sticky-${message.id}") {
                         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } })
+                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } }, maxLines = 4)
                         }
                     }
                 } else {
@@ -595,7 +598,7 @@ private fun EmptyConversation(statusText: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}) {
+private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE) {
     val context = LocalContext.current
     var showCopy by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
@@ -618,6 +621,8 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}) {
                             onLongClickLabel = "Message options", onLongClick = { showCopy = true }
                         ).padding(horizontal = 16.dp, vertical = 12.dp),
                         style = MaterialTheme.typography.bodyLarge,
+                        maxLines = maxLines,
+                        overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
                     )
                 }
                 DropdownMenu(expanded = showCopy, onDismissRequest = { showCopy = false }) {

@@ -199,6 +199,12 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     fun refreshSessions() = gateway.requestSessions()
 
+    fun refreshActiveSession() {
+        if (_state.value.status != ConnectionStatus.CONNECTED) return
+        _state.update { it.copy(statusText = "Refreshing conversation…") }
+        gateway.resumeActiveSession()
+    }
+
     fun togglePin(session: SessionSummary) {
         val origin = connection?.endpoint?.origin ?: return
         val pins = _state.value.pinnedSessions.toMutableSet()
@@ -218,6 +224,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     fun onForeground() {
         if (_state.value.signedIn && !manuallyDisconnected && _state.value.status in setOf(ConnectionStatus.ERROR, ConnectionStatus.DISCONNECTED)) connectSaved()
+        else if (_state.value.status == ConnectionStatus.CONNECTED && _state.value.activeRuntimeSessionId != null) gateway.resumeActiveSession()
     }
 
     fun loadModels() {
