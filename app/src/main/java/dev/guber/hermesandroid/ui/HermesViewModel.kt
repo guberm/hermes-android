@@ -481,7 +481,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         pendingOpenSession?.let { id -> pendingOpenSession = null; gateway.resumeSession(id) }
     }
 
-    override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>) {
+    override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>, tools: List<ToolActivity>) {
         replies.remap(session)
         val queued = pendingPrompt
         pendingPrompt = null
@@ -491,7 +491,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 activeRuntimeSessionId = session.runtimeSessionId,
                 queuedPrompts = it.queuedPrompts.map { item -> if (item.sessionId == session.storedSessionId) item.copy(runtimeId = session.runtimeSessionId) else item },
                 messages = messages,
-                tools = emptyList(),
+                tools = tools,
                 approvals = emptyList(),
                 attachments = emptyList(),
                 isSending = queued != null,
@@ -566,11 +566,13 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                     )).finishTurn("Connected")
                 }
             }
-            "tool.start", "tool.generating", "tool.complete" -> {
-                val id = payload.optionalString("tool_call_id", "id").ifBlank { "tool-${type}" }
+            "tool.start", "tool.progress", "tool.generating", "tool.complete", "tool.failed" -> {
                 val name = payload.optionalString("name", "tool", "title").ifBlank { "Server tool" }
-                val detail = payload.optionalString("detail", "text", "output", "command")
-                updateTool(id, name, detail, type == "tool.complete")
+                val id = payload.optionalString("tool_call_id", "tool_id", "id").ifBlank {
+                    _state.value.tools.lastOrNull { it.name == name && !it.complete }?.id ?: "tool-$type-$name"
+                }
+                val detail = payload.optionalString("context", "args_text", "preview", "summary", "result_text", "detail", "text", "output", "command")
+                updateTool(id, name, detail, type in setOf("tool.complete", "tool.failed"))
             }
             "approval.request" -> {
                 val choices = payload.optJSONArray("choices")?.let { array -> (0 until array.length()).mapNotNull { array.optString(it).ifBlank { null } } }

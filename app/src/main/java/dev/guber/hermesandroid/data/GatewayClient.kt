@@ -40,6 +40,9 @@ class GatewayClient(
         fun onReady(replayEpoch: String?) {}
         fun onSessions(sessions: List<SessionSummary>) {}
         fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>) {}
+        fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>, tools: List<ToolActivity>) {
+            onSessionReady(session, messages)
+        }
         fun onSessionActivity(session: SessionIdentity, running: Boolean) {}
         fun onEvent(params: JSONObject) {}
         fun onAttachment(receipt: AttachmentReceipt) {}
@@ -435,7 +438,8 @@ class GatewayClient(
                 val identity = result.sessionIdentity(fallback)
                 if (identity != null) {
                     activeSession = identity
-                    listener?.onSessionReady(identity, parseMessages(result.optJSONArray("messages") ?: JSONArray()))
+                    val transcript = parseTranscript(result.optJSONArray("messages") ?: JSONArray())
+                    listener?.onSessionReady(identity, transcript.messages, transcript.tools)
                     if (result.has("running") || method == "session.create") listener?.onSessionActivity(identity, result.optBoolean("running"))
                     result.optJSONObject("info")?.let {
                         listener?.onSessionModel(it.optionalString("model"), it.optionalString("provider"), it.optionalString("reasoning", "reasoning_effort"))
@@ -523,16 +527,40 @@ class GatewayClient(
         )
     }
 
-    private fun parseMessages(array: JSONArray): List<ChatMessage> = buildList {
+    private data class SessionTranscript(
+        val messages: List<ChatMessage>,
+        val tools: List<ToolActivity>,
+    )
+
+    private fun parseTranscript(array: JSONArray): SessionTranscript {
+        val messages = mutableListOf<ChatMessage>()
+        val tools = mutableListOf<ToolActivity>()
         for (index in 0 until array.length()) {
             val item = array.optJSONObject(index) ?: continue
+            val role = item.optString("role", "assistant")
+            if (role == "tool") {
+                val name = item.optionalString("name", "tool_name").ifBlank { "Server tool" }
+                val detail = item.optionalString("context", "args_text", "preview", "summary")
+                tools += ToolActivity("history-tool-$index", name, detail, complete = true)
+                continue
+            }
+            item.optionalString("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
+                .takeUnless { it.equals("null", ignoreCase = true) }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { tools += ToolActivity("history-reasoning-$index", "Thinking", it, complete = true) }
             val text = contentText(item.opt("text")).ifBlank { contentText(item.opt("content")) }
             if (text.isBlank()) continue
-            add(ChatMessage(
-                item.optionalString("id", "message_id").ifBlank { "history-$index" }, item.optString("role", "assistant"), text,
-                createdAt = item.optionalString("created_at", "timestamp", "time").ifBlank { java.time.Instant.now().toString() },
-            ))
+            val timestamp = item.optionalString("created_at", "timestamp", "time")
+                .takeUnless { it.equals("null", ignoreCase = true) }
+                .takeUnless { it.equals("undefined", ignoreCase = true) }
+                .orEmpty()
+                .ifBlank { java.time.Instant.now().toString() }
+            messages += ChatMessage(
+                item.optionalString("id", "message_id").ifBlank { "history-$index" }, role, text,
+                createdAt = timestamp,
+            )
         }
+        return SessionTranscript(messages, tools)
     }
 
     private fun contentText(value: Any?): String = when (value) {

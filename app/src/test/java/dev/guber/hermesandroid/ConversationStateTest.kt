@@ -15,6 +15,12 @@ import org.junit.Test
 
 class ConversationStateTest {
     @Test
+    fun invalidGatewayTimestampUsesTheCurrentTimeInsteadOfPlaceholder() {
+        assertTrue(messageTime("null").matches(Regex("\\d{2}:\\d{2}")))
+        assertTrue(messageTime("not-a-time").matches(Regex("\\d{2}:\\d{2}")))
+    }
+
+    @Test
     fun queuedPromptStaysBeforeAnAnswerThatArrivesBeforeAcknowledgement() {
         val previous = ChatMessage("old", "assistant", "Previous response")
         val earlyAnswer = ChatMessage("new", "assistant", "New response", true)

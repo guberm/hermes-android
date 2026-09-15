@@ -102,6 +102,36 @@ class GatewayProtocolTest {
     }
 
     @Test
+    fun resumedHistoryKeepsReasoningAndToolActivity() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        var history = emptyList<dev.guber.hermesandroid.data.ChatMessage>()
+        var activity = emptyList<dev.guber.hermesandroid.data.ToolActivity>()
+        client.listener = object : GatewayClient.Listener {
+            override fun onSessionReady(
+                session: SessionIdentity,
+                messages: List<dev.guber.hermesandroid.data.ChatMessage>,
+                tools: List<dev.guber.hermesandroid.data.ToolActivity>,
+            ) {
+                history = messages
+                activity = tools
+            }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.resumeSession("stored")
+            val request = socket.sentRequest("session.resume")
+            socket.deliver("""{"id":${request.getLong("id")},"result":{"session_id":"runtime","session_key":"stored","messages":[{"role":"user","text":"Start","created_at":null},{"role":"assistant","text":"","reasoning":"Check the state"},{"role":"tool","name":"terminal","context":"git status"},{"role":"assistant","text":"Done"}]}}""")
+            assertEquals(listOf("Start", "Done"), history.map { it.text })
+            assertEquals(listOf("Thinking", "terminal"), activity.map { it.name })
+            assertEquals(listOf("Check the state", "git status"), activity.map { it.detail })
+            assertTrue(history.first().createdAt != "null")
+        } finally { client.shutdown() }
+    }
+
+    @Test
     fun obsoleteTicketCannotReplaceNewConnection() = runBlocking {
         val firstStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
         val firstTicket = kotlinx.coroutines.CompletableDeferred<Result<String>>()

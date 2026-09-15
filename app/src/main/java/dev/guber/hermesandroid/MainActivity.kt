@@ -602,10 +602,15 @@ private fun MessageBubble(message: ChatMessage) {
     }
 }
 
-private fun messageTime(value: String): String = runCatching {
-    val instant = value.toLongOrNull()?.let { if (it < 10_000_000_000L) Instant.ofEpochSecond(it) else Instant.ofEpochMilli(it) } ?: Instant.parse(value)
-    DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(instant)
-}.getOrDefault("--:--")
+internal fun messageTime(value: String): String {
+    val formatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+    return runCatching {
+        val timestamp = value.trim().takeUnless { it.equals("null", ignoreCase = true) || it.equals("undefined", ignoreCase = true) }
+        val instant = timestamp?.toLongOrNull()?.let { if (it < 10_000_000_000L) Instant.ofEpochSecond(it) else Instant.ofEpochMilli(it) }
+            ?: timestamp?.let(Instant::parse) ?: Instant.now()
+        formatter.format(instant)
+    }.getOrElse { formatter.format(Instant.now()) }
+}
 
 private fun copyText(context: Context, text: String) {
     context.getSystemService(android.content.ClipboardManager::class.java)
