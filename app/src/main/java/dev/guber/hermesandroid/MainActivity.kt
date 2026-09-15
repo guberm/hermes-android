@@ -4,10 +4,13 @@ import android.content.Context
 import android.content.Intent
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
@@ -55,6 +58,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -114,9 +118,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -135,7 +147,12 @@ import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.HermesViewModel
 import dev.guber.hermesandroid.ui.queueErrorMessage
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.net.URI
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -555,12 +572,12 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
                         }
                     }
                 } else {
-                    item(key = message.id) { MessageBubble(message) }
+                    item(key = message.id) { MessageBubble(message, imageBaseUrl = state.endpointText) }
                 }
             }
             items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
             items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
-            finalReply?.let { item(key = it.id) { MessageBubble(it) } }
+            finalReply?.let { item(key = it.id) { MessageBubble(it, imageBaseUrl = state.endpointText) } }
             if (state.attachments.isNotEmpty()) {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -599,7 +616,7 @@ private fun EmptyConversation(statusText: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false) {
+private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false, imageBaseUrl: String = "") {
     val context = LocalContext.current
     var showCopy by remember(message.id) { mutableStateOf(false) }
     var expanded by remember(message.id) { mutableStateOf(false) }
@@ -618,16 +635,25 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                     shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
                 ) {
                     Column {
-                        Text(
-                            text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
-                            modifier = Modifier.combinedClickable(
-                                enabled = message.text.isNotBlank(), onClick = onClick,
-                                onLongClickLabel = "Message options", onLongClick = { showCopy = true }
-                            ).then(if (canExpand && expanded) Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()) else Modifier).padding(horizontal = 16.dp, vertical = 12.dp),
-                            style = MaterialTheme.typography.bodyLarge,
-                            maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
-                            overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
-                        )
+                        val clickModifier = Modifier.combinedClickable(
+                            enabled = message.text.isNotBlank(), onClick = onClick,
+                            onLongClickLabel = "Message options", onLongClick = { showCopy = true }
+                        ).padding(horizontal = 16.dp, vertical = 12.dp)
+                        if (user) {
+                            Text(
+                                text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
+                                modifier = clickModifier.then(if (canExpand && expanded) Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()) else Modifier),
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
+                                overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
+                            )
+                        } else {
+                            val content = splitMarkdownImages(message.text)
+                            Column(clickModifier) {
+                                if (content.markdown.isNotBlank()) MarkdownText(content.markdown + if (message.isStreaming) "\n\n▌" else "")
+                                content.imageUrls.forEach { GatewayImage(it, imageBaseUrl) }
+                            }
+                        }
                         if (canExpand) Button(
                             onClick = { expanded = !expanded },
                             modifier = Modifier.align(Alignment.End).padding(end = 8.dp, bottom = 8.dp),
@@ -645,6 +671,95 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
         }
     }
 }
+
+internal data class MarkdownContent(val markdown: String, val imageUrls: List<String>)
+
+private val markdownImagePattern = Regex("""!\[[^]]*]\(([^\s)]+)(?:\s+[\"'][^)]*[\"'])?\)""")
+
+internal fun splitMarkdownImages(text: String): MarkdownContent = MarkdownContent(
+    markdown = text.replace(markdownImagePattern, "").trim(),
+    imageUrls = markdownImagePattern.findAll(text).map { it.groupValues[1] }.distinct().toList(),
+)
+
+@Composable
+private fun MarkdownText(markdown: String) {
+    Text(markdownAnnotatedString(markdown), style = MaterialTheme.typography.bodyLarge)
+}
+
+internal fun markdownAnnotatedString(markdown: String): AnnotatedString = buildAnnotatedString {
+    var codeBlock = false
+    markdown.lines().forEachIndexed { index, original ->
+        if (original.trimStart().startsWith("```")) {
+            codeBlock = !codeBlock
+        } else {
+            val heading = original.trimStart().startsWith("#")
+            val line = original.replaceFirst(Regex("""^#{1,6}\s+"""), "").removePrefix("> ")
+            if (codeBlock) withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(line) }
+            else if (heading) withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { appendMarkdownInline(line) }
+            else appendMarkdownInline(line)
+            if (index < markdown.lines().lastIndex) append('\n')
+        }
+    }
+}
+
+private val markdownToken = Regex("""(\*\*[^*]+\*\*|`[^`]+`|(?<!\*)\*[^*]+\*(?!\*)|\[[^]]+]\([^)]*\))""")
+
+private fun AnnotatedString.Builder.appendMarkdownInline(line: String) {
+    var cursor = 0
+    markdownToken.findAll(line).forEach { match ->
+        append(line.substring(cursor, match.range.first))
+        val token = match.value
+        when {
+            token.startsWith("**") -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(token.drop(2).dropLast(2)) }
+            token.startsWith('`') -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(token.drop(1).dropLast(1)) }
+            token.startsWith('*') -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(token.drop(1).dropLast(1)) }
+            else -> append(token.substringAfter('[').substringBefore("]("))
+        }
+        cursor = match.range.last + 1
+    }
+    append(line.substring(cursor))
+}
+
+internal fun gatewayImageUrl(source: String, endpoint: String): String? {
+    if (source.startsWith("data:image/", ignoreCase = true)) return source
+    return runCatching {
+        val base = URI(endpoint)
+        if (base.scheme != "https" || base.host.isNullOrBlank()) return null
+        val target = if (source.startsWith('/')) base.resolve(source) else URI(source)
+        target.takeIf { it.scheme == "https" && it.host == base.host }?.toString()
+    }.getOrNull()
+}
+
+@Composable
+private fun GatewayImage(source: String, endpoint: String) {
+    val url = gatewayImageUrl(source, endpoint) ?: return
+    var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(url) { bitmap = withContext(Dispatchers.IO) { loadGatewayImage(url) } }
+    bitmap?.let {
+        Image(
+            bitmap = it.asImageBitmap(), contentDescription = "Message image", contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).padding(top = 8.dp),
+        )
+    }
+}
+
+private fun loadGatewayImage(url: String): Bitmap? = runCatching {
+    val bytes = if (url.startsWith("data:image/", ignoreCase = true)) Base64.decode(url.substringAfter(','), Base64.DEFAULT) else {
+        URL(url).openStream().use { input ->
+            ByteArrayOutputStream().use { output ->
+                val buffer = ByteArray(8 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    if (output.size() + read > 25 * 1024 * 1024) throw IOException("Image is too large")
+                    output.write(buffer, 0, read)
+                }
+                output.toByteArray()
+            }
+        }
+    }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+}.getOrNull()
 
 internal fun messageTime(value: String): String {
     val formatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())

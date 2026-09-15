@@ -3,16 +3,21 @@ package dev.guber.hermesandroid
 import dev.guber.hermesandroid.data.ChatMessage
 import dev.guber.hermesandroid.data.SessionSummary
 import dev.guber.hermesandroid.data.ToolActivity
+import dev.guber.hermesandroid.data.transcriptContentText
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.finishTurn
 import dev.guber.hermesandroid.ui.insertSubmittedMessage
 import dev.guber.hermesandroid.ui.mergeToolActivity
 import dev.guber.hermesandroid.ui.queueErrorMessage
+import dev.guber.hermesandroid.gatewayImageUrl
+import dev.guber.hermesandroid.markdownAnnotatedString
+import dev.guber.hermesandroid.splitMarkdownImages
 import dev.guber.hermesandroid.ui.visibleSessions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
 class ConversationStateTest {
     @Test
@@ -72,5 +77,26 @@ class ConversationStateTest {
         val raw = "Session 20260915_092822_062a8f already has a live owner (desktop, pid 1894627, lease age 12m)."
         assertEquals("This chat is active in Hermes Desktop. Close it there, then tap Retry.", queueErrorMessage(raw))
         assertEquals("Network unavailable", queueErrorMessage("Network unavailable"))
+    }
+
+    @Test
+    fun markdownImagesAreRemovedFromTextAndLimitedToTheGateway() {
+        val content = splitMarkdownImages("**Done**\n\n![Chart](/media/chart.png)")
+        assertEquals("**Done**", content.markdown)
+        assertEquals(listOf("/media/chart.png"), content.imageUrls)
+        assertEquals("https://hermes.guber.dev/media/chart.png", gatewayImageUrl("/media/chart.png", "https://hermes.guber.dev"))
+        assertEquals("data:image/png;base64,AA==", gatewayImageUrl("data:image/png;base64,AA==", "https://hermes.guber.dev"))
+        assertEquals(null, gatewayImageUrl("https://example.com/chart.png", "https://hermes.guber.dev"))
+    }
+
+    @Test
+    fun transcriptImageBlockBecomesMarkdownImage() {
+        val image = JSONObject().put("image_url", JSONObject().put("url", "https://hermes.guber.dev/media/chart.png"))
+        assertEquals("![](https://hermes.guber.dev/media/chart.png)", transcriptContentText(image))
+    }
+
+    @Test
+    fun markdownRendererRemovesMarkupFromVisibleText() {
+        assertEquals("Title\nDone with code and docs", markdownAnnotatedString("# Title\n**Done** with `code` and [docs](https://example.com)").text)
     }
 }

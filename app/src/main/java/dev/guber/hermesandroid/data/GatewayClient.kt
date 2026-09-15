@@ -548,7 +548,7 @@ class GatewayClient(
                 .takeUnless { it.equals("null", ignoreCase = true) }
                 ?.takeIf { it.isNotBlank() }
                 ?.let { tools += ToolActivity("history-reasoning-$index", "Thinking", it, complete = true) }
-            val text = contentText(item.opt("text")).ifBlank { contentText(item.opt("content")) }
+            val text = transcriptContentText(item.opt("text")).ifBlank { transcriptContentText(item.opt("content")) }
             if (text.isBlank()) continue
             val timestamp = item.optionalString("created_at", "timestamp", "time")
                 .takeUnless { it.equals("null", ignoreCase = true) }
@@ -563,17 +563,19 @@ class GatewayClient(
         return SessionTranscript(messages, tools)
     }
 
-    private fun contentText(value: Any?): String = when (value) {
-        is String -> value
-        is JSONArray -> (0 until value.length()).joinToString("") { contentText(value.opt(it)) }
-        is JSONObject -> value.optionalString("text", "value", "content")
-        else -> ""
-    }
-
     private fun friendlyError(error: Throwable): String = when {
         error is java.net.UnknownHostException -> "Host was not found"
         error is java.net.ConnectException -> "Could not reach the gateway"
         error is java.net.SocketTimeoutException -> "Gateway connection timed out"
         else -> error.message?.take(180) ?: "Gateway connection failed"
     }
+}
+
+internal fun transcriptContentText(value: Any?): String = when (value) {
+    is String -> value
+    is JSONArray -> (0 until value.length()).joinToString("") { transcriptContentText(value.opt(it)) }
+    is JSONObject -> value.optionalString("text", "value", "content", "url").ifBlank {
+        transcriptContentText(value.opt("image_url")).takeIf { it.isNotBlank() }?.let { "![]($it)" }.orEmpty()
+    }
+    else -> ""
 }
