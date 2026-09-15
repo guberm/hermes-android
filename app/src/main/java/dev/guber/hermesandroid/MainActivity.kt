@@ -641,7 +641,7 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                         if (user) {
                             SelectionContainer {
                                 Text(
-                                    text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
+                                    text = markdownAnnotatedString(message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else ""),
                                     modifier = textModifier,
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
