@@ -94,6 +94,11 @@ internal fun mergeToolActivity(previous: ToolActivity, detail: String, complete:
     return previous.copy(detail = nextDetail, complete = previous.complete || complete)
 }
 
+internal fun queueErrorMessage(error: String): String =
+    if (error.contains("already has a live owner", ignoreCase = true)) {
+        "This chat is active in Hermes Desktop. Close it there, then tap Retry."
+    } else error
+
 class HermesViewModel(application: Application) : AndroidViewModel(application), GatewayClient.Listener {
     private val store = SecureCredentialStore(application)
     private val authApi = AuthApi()
@@ -627,9 +632,10 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onRpcError(method: String, error: GatewayError) {
         if (method in setOf("prompt.queue", "session.steer")) {
-            pendingFollowUp?.queueId?.let { markQueueError(it, error.message) }
+            val message = queueErrorMessage(error.message)
+            pendingFollowUp?.queueId?.let { markQueueError(it, message) }
             pendingFollowUp = null
-            _state.update { it.copy(sendingFollowUp = false, sendingQueuedId = null, statusText = "${error.message}; message kept") }
+            _state.update { it.copy(sendingFollowUp = false, sendingQueuedId = null, statusText = "$message Message kept.") }
             return
         }
         if (error.code == 401 || error.code == 4401) {

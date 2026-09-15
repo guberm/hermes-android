@@ -7,6 +7,7 @@ import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.finishTurn
 import dev.guber.hermesandroid.ui.insertSubmittedMessage
 import dev.guber.hermesandroid.ui.mergeToolActivity
+import dev.guber.hermesandroid.ui.queueErrorMessage
 import dev.guber.hermesandroid.ui.visibleSessions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -64,5 +65,12 @@ class ConversationStateTest {
         assertEquals("Checking logs\nChecking new errors", updated.detail)
         assertEquals("Checking logs\nChecking new errors", mergeToolActivity(updated, "", complete = true).detail)
         assertTrue(mergeToolActivity(updated, "", complete = true).complete)
+    }
+
+    @Test
+    fun liveDesktopOwnerErrorGivesAUsefulRetryInstruction() {
+        val raw = "Session 20260915_092822_062a8f already has a live owner (desktop, pid 1894627, lease age 12m)."
+        assertEquals("This chat is active in Hermes Desktop. Close it there, then tap Retry.", queueErrorMessage(raw))
+        assertEquals("Network unavailable", queueErrorMessage("Network unavailable"))
     }
 }

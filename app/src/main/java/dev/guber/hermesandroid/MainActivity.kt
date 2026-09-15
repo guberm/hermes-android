@@ -133,6 +133,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.HermesViewModel
+import dev.guber.hermesandroid.ui.queueErrorMessage
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 
@@ -738,10 +739,10 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                         Column(Modifier.padding(10.dp)) {
                             Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Text(item.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                            item.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                            item.error?.let { Text(queueErrorMessage(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                             Row {
                                 TextButton(onClick = { viewModel.cancelQueued(item.id) }, enabled = !sending) { Text("Cancel") }
-                                TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text("Send now") }
+                                TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text(if (item.error == null) "Send now" else "Retry") }
                             }
                         }
                     }
