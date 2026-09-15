@@ -62,6 +62,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -568,7 +569,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
                 if (message.role.equals("user", ignoreCase = true)) {
                     stickyHeader(key = "sticky-${message.id}") {
                         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } }, maxLines = 4, collapsible = true)
+                            MessageBubble(message, onClick = { scope.launch { listState.scrollToItem(index) } }, maxLines = 4, collapsible = true)
                         }
                     }
                 } else {
@@ -617,8 +618,6 @@ private fun EmptyConversation(statusText: String) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false, imageBaseUrl: String = "") {
-    val context = LocalContext.current
-    var showCopy by remember(message.id) { mutableStateOf(false) }
     var expanded by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
     val canExpand = collapsible && message.text.length > 240
@@ -635,23 +634,27 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                     shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
                 ) {
                     Column {
-                        val clickModifier = Modifier.combinedClickable(
-                            enabled = message.text.isNotBlank(), onClick = onClick,
-                            onLongClickLabel = "Message options", onLongClick = { showCopy = true }
-                        ).padding(horizontal = 16.dp, vertical = 12.dp)
+                        val clickModifier = if (collapsible) Modifier.clickable(onClick = onClick) else Modifier
+                        val textModifier = clickModifier
+                            .then(if (canExpand && expanded) Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()) else Modifier)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
                         if (user) {
-                            Text(
-                                text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
-                                modifier = clickModifier.then(if (canExpand && expanded) Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()) else Modifier),
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
-                                overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
-                            )
+                            SelectionContainer {
+                                Text(
+                                    text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
+                                    modifier = textModifier,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
+                                    overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
+                                )
+                            }
                         } else {
                             val content = splitMarkdownImages(message.text)
-                            Column(clickModifier) {
-                                if (content.markdown.isNotBlank()) MarkdownText(content.markdown + if (message.isStreaming) "\n\n▌" else "")
-                                content.imageUrls.forEach { GatewayImage(it, imageBaseUrl) }
+                            SelectionContainer {
+                                Column(textModifier) {
+                                    if (content.markdown.isNotBlank()) MarkdownText(content.markdown + if (message.isStreaming) "\n\n▌" else "")
+                                    content.imageUrls.forEach { GatewayImage(it, imageBaseUrl) }
+                                }
                             }
                         }
                         if (canExpand) Button(
@@ -663,9 +666,6 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                             ),
                         ) { Text(if (expanded) "Collapse message" else "Show full message") }
                     }
-                }
-                DropdownMenu(expanded = showCopy, onDismissRequest = { showCopy = false }) {
-                    DropdownMenuItem(text = { Text("Copy message") }, onClick = { copyText(context, message.text); showCopy = false })
                 }
             }
         }
