@@ -550,7 +550,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
                 if (message.role.equals("user", ignoreCase = true)) {
                     stickyHeader(key = "sticky-${message.id}") {
                         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } }, maxLines = 4)
+                            MessageBubble(message, onClick = { scope.launch { listState.animateScrollToItem(index) } }, maxLines = 4, collapsible = true)
                         }
                     }
                 } else {
@@ -598,10 +598,12 @@ private fun EmptyConversation(statusText: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE) {
+private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false) {
     val context = LocalContext.current
     var showCopy by remember(message.id) { mutableStateOf(false) }
+    var expanded by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
+    val canExpand = collapsible && message.text.length > 240
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 340.dp).fillMaxWidth(if (user) 0.88f else 1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -614,16 +616,21 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                     contentColor = if (user) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
                     shape = RoundedCornerShape(18.dp, 18.dp, if (user) 5.dp else 18.dp, if (user) 18.dp else 5.dp),
                 ) {
-                    Text(
-                        text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
-                        modifier = Modifier.combinedClickable(
-                            enabled = message.text.isNotBlank(), onClick = onClick,
-                            onLongClickLabel = "Message options", onLongClick = { showCopy = true }
-                        ).padding(horizontal = 16.dp, vertical = 12.dp),
-                        style = MaterialTheme.typography.bodyLarge,
-                        maxLines = maxLines,
-                        overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
-                    )
+                    Column {
+                        Text(
+                            text = message.text.ifBlank { if (message.isStreaming) "…" else "(empty message)" } + if (message.isStreaming) "  ▌" else "",
+                            modifier = Modifier.combinedClickable(
+                                enabled = message.text.isNotBlank(), onClick = onClick,
+                                onLongClickLabel = "Message options", onLongClick = { showCopy = true }
+                            ).then(if (canExpand && expanded) Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()) else Modifier).padding(horizontal = 16.dp, vertical = 12.dp),
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
+                            overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
+                        )
+                        if (canExpand) TextButton(onClick = { expanded = !expanded }, modifier = Modifier.align(Alignment.End)) {
+                            Text(if (expanded) "Collapse message" else "Show full message")
+                        }
+                    }
                 }
                 DropdownMenu(expanded = showCopy, onDismissRequest = { showCopy = false }) {
                     DropdownMenuItem(text = { Text("Copy message") }, onClick = { copyText(context, message.text); showCopy = false })
