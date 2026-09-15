@@ -627,9 +627,14 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                             maxLines = if (canExpand && !expanded) maxLines else Int.MAX_VALUE,
                             overflow = if (canExpand && !expanded) TextOverflow.Ellipsis else TextOverflow.Clip,
                         )
-                        if (canExpand) TextButton(onClick = { expanded = !expanded }, modifier = Modifier.align(Alignment.End)) {
-                            Text(if (expanded) "Collapse message" else "Show full message")
-                        }
+                        if (canExpand) Button(
+                            onClick = { expanded = !expanded },
+                            modifier = Modifier.align(Alignment.End).padding(end = 8.dp, bottom = 8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.20f),
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        ) { Text(if (expanded) "Collapse message" else "Show full message") }
                     }
                 }
                 DropdownMenu(expanded = showCopy, onDismissRequest = { showCopy = false }) {
