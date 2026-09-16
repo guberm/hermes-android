@@ -197,6 +197,33 @@ class GatewayProtocolTest {
     }
 
     @Test
+    fun restoresInteractivePromptsAndRespondsWithTheGatewayFields() = runBlocking {
+        val factory = RecordingWebSocketFactory()
+        val events = mutableListOf<JSONObject>()
+        val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
+        client.listener = object : GatewayClient.Listener {
+            override fun onEvent(params: JSONObject) { events += params }
+        }
+        try {
+            client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
+            val socket = factory.sockets.single()
+            socket.open()
+            client.setActiveSession(SessionIdentity("stored", "runtime"))
+            val pending = socket.sentRequest("prompt.pending")
+            socket.deliver("""{"id":${pending.getLong("id")},"result":{"requests":[{"type":"clarify.request","payload":{"request_id":"clarify-1","question":"Continue?","choices":["Yes","No"]}},{"type":"secret.request","payload":{"request_id":"secret-1","prompt":"Enter secret"}}]}}""")
+            assertEquals(listOf("clarify.request", "secret.request"), events.map { it.getString("type") })
+            assertEquals("clarify-1", events.first().getJSONObject("payload").getString("request_id"))
+
+            client.respondPrompt("clarify-1", "clarify.request", "Yes")
+            client.respondPrompt("secret-1", "secret.request", "value")
+            val clarify = socket.sentRequest("clarify.respond").getJSONObject("params")
+            val secret = socket.sentRequest("secret.respond").getJSONObject("params")
+            assertEquals("Yes", clarify.getString("answer"))
+            assertEquals("value", secret.getString("value"))
+        } finally { client.shutdown() }
+    }
+
+    @Test
     fun endpointMapsHttpsToWssAndKeepsBasePath() {
         val endpoint = GatewayEndpoint.parse("https://gateway.example/hermes/").getOrThrow()
         assertEquals("wss://gateway.example/hermes/api/ws", endpoint.wsUrl)

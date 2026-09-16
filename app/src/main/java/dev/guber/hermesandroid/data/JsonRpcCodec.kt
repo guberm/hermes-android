@@ -86,6 +86,8 @@ fun sessionInterruptParams(sessionId: String): JSONObject = JSONObject().put("se
 
 fun approvalPendingParams(sessionId: String): JSONObject = JSONObject().put("session_id", sessionId)
 
+fun promptPendingParams(sessionId: String): JSONObject = JSONObject().put("session_id", sessionId)
+
 fun JSONObject.optionalString(vararg keys: String): String = keys
     .asSequence()
     .map { optString(it) }

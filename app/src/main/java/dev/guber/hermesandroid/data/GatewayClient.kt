@@ -114,6 +114,7 @@ class GatewayClient(
         session?.runtimeSessionId?.let {
             requestReplay(it)
             requestPendingApprovals(it)
+            requestPendingPrompts(it)
         }
     }
 
@@ -169,6 +170,17 @@ class GatewayClient(
         sendRpc("approval.respond", approvalResponseParams(requestId, choice))
     }
 
+    fun respondPrompt(requestId: String, type: String, answer: String) {
+        val (method, field) = when (type) {
+            "clarify.request" -> "clarify.respond" to "answer"
+            "sudo.request" -> "sudo.respond" to "password"
+            "secret.request" -> "secret.respond" to "value"
+            "terminal.read.request" -> "terminal.read.respond" to "text"
+            else -> return
+        }
+        sendRpc(method, JSONObject().put("request_id", requestId).put(field, answer))
+    }
+
     fun attachImage(sessionId: String, bytes: ByteArray, filename: String, extension: String?) {
         val params = JSONObject()
             .put("session_id", sessionId)
@@ -199,6 +211,11 @@ class GatewayClient(
     private fun requestPendingApprovals(runtimeSessionId: String) {
         if (socket == null || runtimeSessionId.isBlank()) return
         sendRpc("approval.pending", approvalPendingParams(runtimeSessionId))
+    }
+
+    private fun requestPendingPrompts(runtimeSessionId: String) {
+        if (socket == null || runtimeSessionId.isBlank()) return
+        sendRpc("prompt.pending", promptPendingParams(runtimeSessionId))
     }
 
     private fun sendRpc(method: String, params: JSONObject = JSONObject(), responseMethod: String = method): Long? {
@@ -447,6 +464,7 @@ class GatewayClient(
                     identity.runtimeSessionId?.let {
                         requestReplay(it)
                         requestPendingApprovals(it)
+                        requestPendingPrompts(it)
                     }
                 }
             }
@@ -463,6 +481,23 @@ class GatewayClient(
                 "reasoning" -> listener?.onReasoningChanged(result.optionalString("value"))
             }
             "approval.pending" -> listener?.onPendingApprovals(parsePendingApprovals(result))
+            "prompt.pending" -> {
+                val sessionId = activeSession?.runtimeSessionId.orEmpty()
+                val prompts = result.optJSONArray("requests") ?: JSONArray()
+                for (index in 0 until prompts.length()) {
+                    val prompt = prompts.optJSONObject(index) ?: continue
+                    val type = prompt.optionalString("type")
+                    val payload = prompt.optJSONObject("payload") ?: continue
+                    if (type.endsWith(".request") && sessionId.isNotBlank()) {
+                        listener?.onEvent(
+                            JSONObject()
+                                .put("type", type)
+                                .put("session_id", sessionId)
+                                .put("payload", payload),
+                        )
+                    }
+                }
+            }
             "image.attach_bytes", "file.attach" -> listener?.onAttachment(
                 AttachmentReceipt(
                     name = result.optionalString("name", "filename").ifBlank { "Attachment" },

@@ -20,6 +20,7 @@ import dev.guber.hermesandroid.data.SessionIdentity
 import dev.guber.hermesandroid.data.StoredConnection
 import dev.guber.hermesandroid.data.ToolActivity
 import dev.guber.hermesandroid.data.GatewayModel
+import dev.guber.hermesandroid.data.InteractivePrompt
 import dev.guber.hermesandroid.data.ReplyTracker
 import dev.guber.hermesandroid.data.QueuedPrompt
 import dev.guber.hermesandroid.data.encodeQueue
@@ -47,6 +48,7 @@ data class HermesUiState(
     val messages: List<ChatMessage> = emptyList(),
     val tools: List<ToolActivity> = emptyList(),
     val approvals: List<ApprovalRequest> = emptyList(),
+    val prompts: List<InteractivePrompt> = emptyList(),
     val attachments: List<AttachmentReceipt> = emptyList(),
     val draft: String = "",
     val isSending: Boolean = false,
@@ -443,6 +445,11 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         gateway.respondApproval(request.requestId, choice)
     }
 
+    fun respondPrompt(request: InteractivePrompt, answer: String) {
+        _state.update { it.copy(prompts = it.prompts.filterNot { item -> item.requestId == request.requestId }, statusText = "Response sent") }
+        gateway.respondPrompt(request.requestId, request.type, answer)
+    }
+
     fun attach(name: String, mimeType: String, bytes: ByteArray) {
         val runtimeSessionId = _state.value.activeRuntimeSessionId
         if (runtimeSessionId == null) {
@@ -505,6 +512,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 messages = messages,
                 tools = tools,
                 approvals = emptyList(),
+                prompts = emptyList(),
                 attachments = emptyList(),
                 isSending = queued != null,
                 activeTitle = it.sessions.firstOrNull { item -> item.id == session.storedSessionId }?.title ?: "New conversation",
@@ -575,7 +583,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                             val previous = list[index]
                             list[index] = previous.copy(text = if (text.isBlank()) previous.text else text, isStreaming = false)
                         },
-                    )).finishTurn("Connected")
+                    )).finishTurn("Connected").copy(prompts = emptyList())
                 }
             }
             "tool.start", "tool.progress", "tool.generating", "tool.complete", "tool.failed" -> {
@@ -595,6 +603,24 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                     choices = choices,
                 )
                 if (request.requestId.isNotBlank()) _state.update { it.copy(approvals = (it.approvals + request).distinctBy { item -> item.requestId }) }
+            }
+            "clarify.request", "sudo.request", "secret.request", "terminal.read.request" -> {
+                val request = InteractivePrompt(
+                    requestId = payload.optionalString("request_id", "id"),
+                    type = type,
+                    question = when (type) {
+                        "clarify.request" -> payload.optionalString("question")
+                        "secret.request" -> payload.optionalString("prompt").ifBlank { "Enter the requested secret" }
+                        "sudo.request" -> "Enter the administrator password for the Hermes host"
+                        else -> "Android cannot provide a desktop terminal buffer"
+                    },
+                    choices = payload.optJSONArray("choices")?.let { array ->
+                        (0 until array.length()).mapNotNull { array.optString(it).ifBlank { null } }
+                    }.orEmpty(),
+                )
+                if (request.requestId.isNotBlank() && request.question.isNotBlank()) {
+                    _state.update { it.copy(prompts = (it.prompts + request).distinctBy { item -> item.requestId }, statusText = "Input required") }
+                }
             }
             "status.busy", "status.idle", "notification.show" -> {
                 val detail = payload.optionalString("message", "text", "status").ifBlank { type.removePrefix("status.") }

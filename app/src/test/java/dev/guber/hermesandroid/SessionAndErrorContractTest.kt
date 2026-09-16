@@ -5,6 +5,7 @@ import dev.guber.hermesandroid.data.AuthSession
 import dev.guber.hermesandroid.data.approvalPendingParams
 import dev.guber.hermesandroid.data.approvalResponseParams
 import dev.guber.hermesandroid.data.promptSubmitParams
+import dev.guber.hermesandroid.data.promptPendingParams
 import dev.guber.hermesandroid.data.sessionIdentity
 import dev.guber.hermesandroid.data.sessionInterruptParams
 import dev.guber.hermesandroid.data.sessionCreateParams
@@ -44,6 +45,7 @@ class SessionAndErrorContractTest {
         assertEquals("deny", approvalResponseParams("approval-1", "deny").getString("choice"))
         assertEquals("runtime-1", sessionInterruptParams("runtime-1").getString("session_id"))
         assertEquals("runtime-1", approvalPendingParams("runtime-1").getString("session_id"))
+        assertEquals("runtime-1", promptPendingParams("runtime-1").getString("session_id"))
     }
 
     @Test

@@ -131,11 +131,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import dev.guber.hermesandroid.data.ApprovalRequest
+import dev.guber.hermesandroid.data.InteractivePrompt
 import dev.guber.hermesandroid.data.ChatMessage
 import dev.guber.hermesandroid.data.ConnectionStatus
 import dev.guber.hermesandroid.data.SessionSummary
@@ -538,9 +541,9 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
 private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val itemCount = state.messages.size + state.tools.size + state.approvals.size + if (state.attachments.isNotEmpty()) 1 else 0
+    val itemCount = state.messages.size + state.tools.size + state.approvals.size + state.prompts.size + if (state.attachments.isNotEmpty()) 1 else 0
     val canScrollToLatest by remember { derivedStateOf { listState.canScrollForward } }
-    LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size) {
+    LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size, state.prompts.size) {
         if (itemCount > 0 && !listState.canScrollForward) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
     }
     if (state.status == ConnectionStatus.ERROR && state.messages.isEmpty()) {
@@ -560,7 +563,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (state.messages.isEmpty() && state.tools.isEmpty()) {
+            if (state.messages.isEmpty() && state.tools.isEmpty() && state.prompts.isEmpty()) {
                 item { EmptyConversation(statusText = state.statusText) }
             }
             val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
@@ -578,6 +581,7 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             }
             items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
             items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
+            items(state.prompts, key = { "prompt-${it.requestId}" }) { PromptCard(it, viewModel) }
             finalReply?.let { item(key = it.id) { MessageBubble(it, imageBaseUrl = state.endpointText) } }
             if (state.attachments.isNotEmpty()) {
                 item {
@@ -827,6 +831,49 @@ private fun ApprovalCard(request: ApprovalRequest, viewModel: HermesViewModel) {
             }
             Spacer(Modifier.height(5.dp))
             Text("Unanswered approvals remain server-side; cancel defaults to deny.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+        }
+    }
+}
+
+@Composable
+private fun PromptCard(request: InteractivePrompt, viewModel: HermesViewModel) {
+    var answer by rememberSaveable(request.requestId) { mutableStateOf("") }
+    val secret = request.type in setOf("sudo.request", "secret.request")
+    val terminalRead = request.type == "terminal.read.request"
+    val title = when (request.type) {
+        "clarify.request" -> "Your answer is needed"
+        "sudo.request" -> "Administrator password required"
+        "secret.request" -> "Secret required"
+        else -> "Desktop terminal required"
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text(title, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+            Text(request.question, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
+            request.choices.forEach { choice ->
+                OutlinedButton(onClick = { viewModel.respondPrompt(request, choice) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(choice, modifier = Modifier.fillMaxWidth())
+                }
+            }
+            if (!terminalRead) {
+                OutlinedTextField(
+                    value = answer,
+                    onValueChange = { answer = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(if (request.choices.isEmpty()) "Response" else "Other response") },
+                    singleLine = true,
+                    visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text),
+                )
+            } else {
+                Text("Skip to let Hermes continue without terminal output.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { viewModel.respondPrompt(request, "") }) { Text("Skip") }
+                if (!terminalRead) {
+                    Button(onClick = { viewModel.respondPrompt(request, answer) }, enabled = answer.isNotBlank()) { Text("Send") }
+                }
+            }
         }
     }
 }

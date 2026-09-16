@@ -86,6 +86,13 @@ data class ApprovalRequest(
     val choices: List<String>,
 )
 
+data class InteractivePrompt(
+    val requestId: String,
+    val type: String,
+    val question: String,
+    val choices: List<String> = emptyList(),
+)
+
 data class AttachmentReceipt(
     val name: String,
     val marker: String,
