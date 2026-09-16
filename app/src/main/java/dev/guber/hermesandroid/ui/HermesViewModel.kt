@@ -657,6 +657,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     override fun onRpcError(method: String, error: GatewayError) {
+        if (method == "prompt.pending" && error.code == -32601) return
         if (method in setOf("prompt.queue", "session.steer")) {
             val message = queueErrorMessage(error.message)
             pendingFollowUp?.queueId?.let { markQueueError(it, message) }
