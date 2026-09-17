@@ -63,6 +63,7 @@ data class SessionSummary(
     val preview: String,
     val messageCount: Int,
     val updatedLabel: String = "",
+    val source: String = "",
 )
 
 data class ChatMessage(
@@ -71,6 +72,7 @@ data class ChatMessage(
     val text: String,
     val isStreaming: Boolean = false,
     val createdAt: String = Instant.now().toString(),
+    val timelineOrder: Long = 0,
 )
 
 data class ToolActivity(
@@ -78,12 +80,18 @@ data class ToolActivity(
     val name: String,
     val detail: String,
     val complete: Boolean = false,
+    val timelineOrder: Long = 0,
 )
 
 data class ApprovalRequest(
     val requestId: String,
     val command: String,
     val choices: List<String>,
+    val timelineOrder: Long = 0,
+    val submitting: Boolean = false,
+    val selectedChoice: String? = null,
+    val error: String? = null,
+    val resolved: Boolean = false,
 )
 
 data class InteractivePrompt(
@@ -91,6 +99,12 @@ data class InteractivePrompt(
     val type: String,
     val question: String,
     val choices: List<String> = emptyList(),
+    val timelineOrder: Long = 0,
+    val submitting: Boolean = false,
+    /** Never contains secret or sudo input. */
+    val responseSummary: String? = null,
+    val error: String? = null,
+    val resolved: Boolean = false,
 )
 
 data class AttachmentReceipt(

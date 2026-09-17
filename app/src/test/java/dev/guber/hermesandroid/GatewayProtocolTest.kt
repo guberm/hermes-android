@@ -182,8 +182,10 @@ class GatewayProtocolTest {
         val factory = RecordingWebSocketFactory()
         val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
         val restored = mutableListOf<dev.guber.hermesandroid.data.ApprovalRequest>()
+        val answered = mutableListOf<String>()
         client.listener = object : GatewayClient.Listener {
             override fun onPendingApprovals(approvals: List<dev.guber.hermesandroid.data.ApprovalRequest>) { restored += approvals }
+            override fun onApprovalResponse(requestId: String) { answered += requestId }
         }
         try {
             client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
@@ -193,6 +195,10 @@ class GatewayProtocolTest {
             val request = socket.sentRequest("approval.pending")
             socket.deliver("""{"id":${request.getLong("id")},"result":{"approvals":[{"request_id":"approval-1","command":"Run checks","choices":["once","deny"]}]}}""")
             assertEquals("approval-1", restored.single().requestId)
+            client.respondApproval("approval-1", "once")
+            val response = socket.sentRequest("approval.respond")
+            socket.deliver("""{"id":${response.getLong("id")},"result":{"ok":true}}""")
+            assertEquals(listOf("approval-1"), answered)
         } finally { client.shutdown() }
     }
 
@@ -200,9 +206,11 @@ class GatewayProtocolTest {
     fun restoresInteractivePromptsAndRespondsWithTheGatewayFields() = runBlocking {
         val factory = RecordingWebSocketFactory()
         val events = mutableListOf<JSONObject>()
+        val answered = mutableListOf<String>()
         val client = GatewayClient(ticketProvider = GatewayTicketProvider { _, _ -> Result.success("ticket") }, webSocketFactory = factory)
         client.listener = object : GatewayClient.Listener {
             override fun onEvent(params: JSONObject) { events += params }
+            override fun onPromptResponse(requestId: String) { answered += requestId }
         }
         try {
             client.connect(GatewayEndpoint.parse("https://gateway.example").getOrThrow(), dev.guber.hermesandroid.data.AuthSession("access", "", 0))
@@ -220,6 +228,9 @@ class GatewayProtocolTest {
             val secret = socket.sentRequest("secret.respond").getJSONObject("params")
             assertEquals("Yes", clarify.getString("answer"))
             assertEquals("value", secret.getString("value"))
+            val response = socket.sentRequest("clarify.respond")
+            socket.deliver("""{"id":${response.getLong("id")},"result":{"ok":true}}""")
+            assertEquals(listOf("clarify-1"), answered)
         } finally { client.shutdown() }
     }
 

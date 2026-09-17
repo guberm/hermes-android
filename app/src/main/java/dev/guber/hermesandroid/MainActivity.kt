@@ -101,7 +101,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -150,6 +150,8 @@ import java.time.format.DateTimeFormatter
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.HermesViewModel
 import dev.guber.hermesandroid.ui.queueErrorMessage
+import dev.guber.hermesandroid.ui.sessionBadge
+import dev.guber.hermesandroid.ui.sessionSourceLabel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -503,8 +505,9 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
                 LazyColumn(Modifier.fillMaxWidth()) {
                     if (sessions.isEmpty()) item { Text("No matching chats", Modifier.padding(20.dp)) }
                     items(sessions, key = { it.id }) { session ->
+                        val badge = sessionBadge(state, session.id)
                         SessionRow(session, selected = session.id == state.activeSessionId, pinned = session.id in state.pinnedSessions,
-                            onPin = { onPin(session) }, onClick = { onSelect(session) })
+                            badge = badge, onPin = { onPin(session) }, onClick = { onSelect(session) })
                     }
                 }
             }
@@ -513,7 +516,7 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
 }
 
 @Composable
-private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boolean, onPin: () -> Unit, onClick: () -> Unit) {
+private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boolean, badge: String?, onPin: () -> Unit, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -522,11 +525,18 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
             .padding(horizontal = 20.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline))
+        val dot = when (badge) {
+            "Input needed" -> MaterialTheme.colorScheme.error
+            "Working" -> MaterialTheme.colorScheme.primary
+            else -> if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+        }
+        Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
             if (session.preview.isNotBlank()) Text(session.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (session.source.isNotBlank()) Text("Started on ${sessionSourceLabel(session.source)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            badge?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = dot) }
         }
         if (session.messageCount > 0) Text(session.messageCount.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         IconButton(onClick = onPin) {
@@ -536,14 +546,47 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
     }
 }
 
+private sealed interface TimelineItem {
+    val key: String
+    val order: Long
+}
+
+private data class TimelineMessage(val message: ChatMessage) : TimelineItem {
+    override val key = message.id
+    override val order = message.timelineOrder
+}
+
+private data class TimelineTool(val tool: ToolActivity) : TimelineItem {
+    override val key = "tool-${tool.id}"
+    override val order = tool.timelineOrder
+}
+
+private data class TimelineApproval(val approval: ApprovalRequest) : TimelineItem {
+    override val key = "approval-${approval.requestId}"
+    override val order = approval.timelineOrder
+}
+
+private data class TimelinePrompt(val prompt: InteractivePrompt) : TimelineItem {
+    override val key = "prompt-${prompt.requestId}"
+    override val order = prompt.timelineOrder
+}
+
+private fun HermesUiState.timeline(): List<TimelineItem> = buildList {
+    messages.forEach { add(TimelineMessage(it)) }
+    tools.forEach { add(TimelineTool(it)) }
+    approvals.forEach { add(TimelineApproval(it)) }
+    prompts.forEach { add(TimelinePrompt(it)) }
+}.sortedWith(compareBy<TimelineItem> { it.order }.thenBy { it.key })
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val itemCount = state.messages.size + state.tools.size + state.approvals.size + state.prompts.size + if (state.attachments.isNotEmpty()) 1 else 0
+    val timeline = state.timeline()
+    val itemCount = timeline.size + if (state.attachments.isNotEmpty()) 1 else 0
     val canScrollToLatest by remember { derivedStateOf { listState.canScrollForward } }
-    LaunchedEffect(state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail, state.approvals.size, state.prompts.size) {
+    LaunchedEffect(timeline.lastOrNull()?.key, state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail) {
         if (itemCount > 0 && !listState.canScrollForward) listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
     }
     if (state.status == ConnectionStatus.ERROR && state.messages.isEmpty()) {
@@ -563,26 +606,28 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 24.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (state.messages.isEmpty() && state.tools.isEmpty() && state.prompts.isEmpty()) {
+            if (timeline.isEmpty()) {
                 item { EmptyConversation(statusText = state.statusText) }
             }
-            val finalReply = state.messages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }
-            val messagesBeforeActivity = if (finalReply == null) state.messages else state.messages.dropLast(1)
-            messagesBeforeActivity.forEachIndexed { index, message ->
-                if (message.role.equals("user", ignoreCase = true)) {
-                    stickyHeader(key = "sticky-${message.id}") {
-                        Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
-                            MessageBubble(message, onClick = { scope.launch { listState.scrollToItem(index) } }, maxLines = 4, collapsible = true)
+            timeline.forEachIndexed { index, entry ->
+                when (entry) {
+                    is TimelineMessage -> {
+                        val message = entry.message
+                        if (message.role.equals("user", ignoreCase = true)) {
+                            stickyHeader(key = "sticky-${message.id}") {
+                                Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
+                                    MessageBubble(message, onClick = { scope.launch { listState.scrollToItem(index) } }, maxLines = 4, collapsible = true)
+                                }
+                            }
+                        } else {
+                            item(key = entry.key) { MessageBubble(message, imageBaseUrl = state.endpointText) }
                         }
                     }
-                } else {
-                    item(key = message.id) { MessageBubble(message, imageBaseUrl = state.endpointText) }
+                    is TimelineTool -> item(key = entry.key) { ToolCard(entry.tool) }
+                    is TimelineApproval -> item(key = entry.key) { ApprovalCard(entry.approval, viewModel) }
+                    is TimelinePrompt -> item(key = entry.key) { PromptCard(entry.prompt, viewModel) }
                 }
             }
-            items(state.tools, key = { "tool-${it.id}" }) { ToolCard(it) }
-            items(state.approvals, key = { "approval-${it.requestId}" }) { ApprovalCard(it, viewModel) }
-            items(state.prompts, key = { "prompt-${it.requestId}" }) { PromptCard(it, viewModel) }
-            finalReply?.let { item(key = it.id) { MessageBubble(it, imageBaseUrl = state.endpointText) } }
             if (state.attachments.isNotEmpty()) {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -594,12 +639,12 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             }
         }
         if (canScrollToLatest) {
-            SmallFloatingActionButton(
-                onClick = { scope.launch { listState.animateScrollToItem(itemCount - 1, Int.MAX_VALUE) } },
+            ExtendedFloatingActionButton(
+                onClick = { scope.launch { listState.scrollToItem(itemCount - 1, Int.MAX_VALUE) } },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-            ) {
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll to latest message")
-            }
+                icon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll to latest message") },
+                text = { Text(if (state.awaitingInput) "Input needed" else "Latest") },
+            )
         }
     }
 }
@@ -820,14 +865,21 @@ private fun ApprovalCard(request: ApprovalRequest, viewModel: HermesViewModel) {
             Spacer(Modifier.height(8.dp))
             Text(request.command, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                request.choices.forEach { choice ->
-                    Button(
-                        onClick = { viewModel.chooseApproval(request, choice) },
-                        colors = ButtonDefaults.buttonColors(containerColor = if (choice == "deny") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 13.dp, vertical = 7.dp),
-                    ) { Text(choice.replaceFirstChar { it.uppercase() }) }
+            if (request.resolved) {
+                Text("Answered: ${request.selectedChoice.orEmpty()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    request.choices.forEach { choice ->
+                        Button(
+                            onClick = { viewModel.chooseApproval(request, choice) },
+                            enabled = !request.submitting,
+                            colors = ButtonDefaults.buttonColors(containerColor = if (choice == "deny") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 13.dp, vertical = 7.dp),
+                        ) { Text(choice.replaceFirstChar { it.uppercase() }) }
+                    }
                 }
+                if (request.submitting) Text("Sending…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                request.error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
             }
             Spacer(Modifier.height(5.dp))
             Text("Unanswered approvals remain server-side; cancel defaults to deny.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
@@ -850,29 +902,36 @@ private fun PromptCard(request: InteractivePrompt, viewModel: HermesViewModel) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Text(title, color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
             Text(request.question, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
-            request.choices.forEach { choice ->
-                OutlinedButton(onClick = { viewModel.respondPrompt(request, choice) }, modifier = Modifier.fillMaxWidth()) {
-                    Text(choice, modifier = Modifier.fillMaxWidth())
-                }
-            }
-            if (!terminalRead) {
-                OutlinedTextField(
-                    value = answer,
-                    onValueChange = { answer = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (request.choices.isEmpty()) "Response" else "Other response") },
-                    singleLine = true,
-                    visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text),
-                )
+            if (request.resolved) {
+                Text(request.responseSummary.orEmpty(), color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Skip to let Hermes continue without terminal output.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { viewModel.respondPrompt(request, "") }) { Text("Skip") }
-                if (!terminalRead) {
-                    Button(onClick = { viewModel.respondPrompt(request, answer) }, enabled = answer.isNotBlank()) { Text("Send") }
+                request.choices.forEach { choice ->
+                    OutlinedButton(onClick = { viewModel.respondPrompt(request, choice) }, enabled = !request.submitting, modifier = Modifier.fillMaxWidth()) {
+                        Text(choice, modifier = Modifier.fillMaxWidth())
+                    }
                 }
+                if (!terminalRead) {
+                    OutlinedTextField(
+                        value = answer,
+                        onValueChange = { answer = it },
+                        enabled = !request.submitting,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(if (request.choices.isEmpty()) "Response" else "Other response") },
+                        singleLine = true,
+                        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+                        keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Text),
+                    )
+                } else {
+                    Text("Skip to let Hermes continue without terminal output.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { viewModel.respondPrompt(request, "") }, enabled = !request.submitting) { Text("Skip") }
+                    if (!terminalRead) {
+                        Button(onClick = { viewModel.respondPrompt(request, answer) }, enabled = answer.isNotBlank() && !request.submitting) { Text("Send") }
+                    }
+                }
+                if (request.submitting) Text("Sending…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                request.error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -897,13 +956,15 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
             if (queued.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(queued, key = { it.id }) { item ->
                     val sending = state.sendingQueuedId == item.id
+                    val paused = item.sessionId in state.parkedQueueSessionIds
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(10.dp)) {
-                            Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else if (paused) "QUEUE PAUSED" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Text(item.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
                             item.error?.let { Text(queueErrorMessage(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                             Row {
                                 TextButton(onClick = { viewModel.cancelQueued(item.id) }, enabled = !sending) { Text("Cancel") }
+                                if (paused) TextButton(onClick = { viewModel.resumeQueuedSession(item.sessionId) }, enabled = !sending) { Text("Resume") }
                                 TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text(if (item.error == null) "Send now" else "Retry") }
                             }
                         }
@@ -926,7 +987,7 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                     shape = RoundedCornerShape(20.dp),
                 )
                 Spacer(Modifier.width(8.dp))
-                if (state.isSending) {
+                if (state.isSending && !state.awaitingInput) {
                     IconButton(
                         onClick = viewModel::stopStreaming,
                         enabled = state.status == ConnectionStatus.CONNECTED,

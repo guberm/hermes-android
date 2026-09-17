@@ -49,6 +49,8 @@ class GatewayClient(
         fun onPendingApprovals(approvals: List<ApprovalRequest>) {}
         fun onReplayGap(sessionId: String) {}
         fun onSessionInterrupted() {}
+        fun onApprovalResponse(requestId: String) {}
+        fun onPromptResponse(requestId: String) {}
         fun onRpcError(method: String, error: GatewayError) {}
         fun onFollowUpResult(method: String, result: JSONObject) {}
         fun onModels(models: List<GatewayModel>, currentModel: String, currentProvider: String, currentReasoning: String) {}
@@ -167,7 +169,7 @@ class GatewayClient(
     }
 
     fun respondApproval(requestId: String, choice: String) {
-        sendRpc("approval.respond", approvalResponseParams(requestId, choice))
+        sendRpc("approval.respond", approvalResponseParams(requestId, choice), "approval.respond:$requestId")
     }
 
     fun respondPrompt(requestId: String, type: String, answer: String) {
@@ -178,7 +180,7 @@ class GatewayClient(
             "terminal.read.request" -> "terminal.read.respond" to "text"
             else -> return
         }
-        sendRpc(method, JSONObject().put("request_id", requestId).put(field, answer))
+        sendRpc(method, JSONObject().put("request_id", requestId).put(field, answer), "prompt.respond:$requestId")
     }
 
     fun attachImage(sessionId: String, bytes: ByteArray, filename: String, extension: String?) {
@@ -447,7 +449,10 @@ class GatewayClient(
             return
         }
         val result = message.optJSONObject("result") ?: JSONObject()
-        when (method) {
+        when {
+            method.startsWith("approval.respond:") -> listener?.onApprovalResponse(method.substringAfter(':'))
+            method.startsWith("prompt.respond:") -> listener?.onPromptResponse(method.substringAfter(':'))
+            else -> when (method) {
             "prompt.queue", "session.steer" -> listener?.onFollowUpResult(method, result)
             "session.list" -> listener?.onSessions(parseSessions(result.optJSONArray("sessions") ?: JSONArray()))
             "session.create", "session.resume" -> {
@@ -520,6 +525,7 @@ class GatewayClient(
                     activeSession?.runtimeSessionId?.let { listener?.onReplayGap(it) }
                 }
             }
+            }
         }
     }
 
@@ -534,6 +540,7 @@ class GatewayClient(
                     preview = item.optionalString("preview", "last_message", "summary"),
                     messageCount = item.optInt("message_count", item.optInt("messageCount", 0)),
                     updatedLabel = item.optionalString("updated_at", "updated", "created_at"),
+                    source = item.optionalString("source", "platform"),
                 ),
             )
         }
@@ -576,13 +583,13 @@ class GatewayClient(
             if (role == "tool") {
                 val name = item.optionalString("name", "tool_name").ifBlank { "Server tool" }
                 val detail = item.optionalString("context", "args_text", "preview", "summary")
-                tools += ToolActivity("history-tool-$index", name, detail, complete = true)
+                tools += ToolActivity("history-tool-$index", name, detail, complete = true, timelineOrder = index * 100L)
                 continue
             }
             item.optionalString("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items")
                 .takeUnless { it.equals("null", ignoreCase = true) }
                 ?.takeIf { it.isNotBlank() }
-                ?.let { tools += ToolActivity("history-reasoning-$index", "Thinking", it, complete = true) }
+                ?.let { tools += ToolActivity("history-reasoning-$index", "Thinking", it, complete = true, timelineOrder = index * 100L) }
             val text = transcriptContentText(item.opt("text")).ifBlank { transcriptContentText(item.opt("content")) }
             if (text.isBlank()) continue
             val timestamp = item.optionalString("created_at", "timestamp", "time")
@@ -593,6 +600,7 @@ class GatewayClient(
             messages += ChatMessage(
                 item.optionalString("id", "message_id").ifBlank { "history-$index" }, role, text,
                 createdAt = timestamp,
+                timelineOrder = index * 100L + 1,
             )
         }
         return SessionTranscript(messages, tools)

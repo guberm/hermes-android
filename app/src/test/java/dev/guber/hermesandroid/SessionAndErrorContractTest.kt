@@ -21,9 +21,12 @@ class SessionAndErrorContractTest {
     fun sessionCreateAndResumeKeepDurableSessionIdentifiers() {
         val create = sessionCreateParams(" Morning review ")
         assertEquals("default", create.getString("profile"))
+        assertEquals("android", create.getString("source"))
         assertFalse(create.getBoolean("close_on_disconnect"))
         assertEquals("Morning review", create.getString("title"))
-        assertEquals("stored-42", sessionResumeParams("stored-42").getString("session_id"))
+        val resume = sessionResumeParams("stored-42")
+        assertEquals("stored-42", resume.getString("session_id"))
+        assertEquals("android", resume.getString("source"))
     }
 
     @Test
