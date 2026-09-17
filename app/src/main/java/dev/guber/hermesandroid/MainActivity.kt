@@ -159,6 +159,9 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
 import java.net.URL
+import org.json.JSONArray
+import org.json.JSONObject
+import androidx.compose.ui.window.Dialog
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -188,6 +191,11 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         (application as HermesApplication).viewModel.onForeground()
+    }
+
+    override fun onStop() {
+        (application as HermesApplication).viewModel.onBackground()
+        super.onStop()
     }
 }
 
@@ -293,14 +301,32 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     var showModels by remember { mutableStateOf(false) }
     var showChatMenu by remember { mutableStateOf(false) }
     var showSendDefaults by remember { mutableStateOf(false) }
+    var showConversationSearch by rememberSaveable { mutableStateOf(false) }
+    var conversationQuery by rememberSaveable(state.activeSessionId) { mutableStateOf("") }
+    var exportFormat by rememberSaveable { mutableStateOf("txt") }
+    var imageToSave by remember { mutableStateOf<Bitmap?>(null) }
     val chatContext = LocalContext.current
     val exportChat = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) scope.launch {
-            val text = state.messages.joinToString("\n\n") { "${it.role}:\n${it.text}" }
+            val text = when (exportFormat) {
+                "md" -> transcriptMarkdown(state.activeTitle, state)
+                "json" -> transcriptJson(state.activeTitle, state)
+                else -> state.messages.joinToString("\n\n") { "${it.role}:\n${it.text}" }
+            }
             val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching { checkNotNull(chatContext.contentResolver.openOutputStream(uri)).bufferedWriter().use { it.write(text) } }
             }
             android.widget.Toast.makeText(chatContext, if (result.isSuccess) "Chat exported" else "Could not export chat", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    val saveImage = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        val image = imageToSave
+        imageToSave = null
+        if (uri != null && image != null) scope.launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { checkNotNull(chatContext.contentResolver.openOutputStream(uri)).use { check(image.compress(Bitmap.CompressFormat.PNG, 100, it)) } }
+            }
+            android.widget.Toast.makeText(chatContext, if (result.isSuccess) "Image saved" else "Could not save image", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
     ModalNavigationDrawer(
@@ -323,6 +349,7 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
     ) {
         Scaffold(
             topBar = {
+                Column {
                 TopAppBar(
                     title = {
                         Column {
@@ -343,6 +370,9 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                         IconButton(onClick = { showModels = true; viewModel.loadModels() }, enabled = state.status == ConnectionStatus.CONNECTED && !state.isSending) {
                             Icon(Icons.Default.Tune, contentDescription = "Choose model")
                         }
+                        IconButton(onClick = { showConversationSearch = !showConversationSearch; if (!showConversationSearch) conversationQuery = "" }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search this conversation")
+                        }
                         Box {
                             IconButton(onClick = { showChatMenu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
                             DropdownMenu(expanded = showChatMenu, onDismissRequest = { showChatMenu = false }) {
@@ -353,13 +383,31 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
                                     copyText(chatContext, state.messages.joinToString("\n\n") { "${it.role}:\n${it.text}" })
                                 })
                                 DropdownMenuItem(text = { Text("Export chat (.txt)") }, enabled = state.messages.isNotEmpty(), onClick = {
-                                    showChatMenu = false; exportChat.launch("hermes-chat-${state.activeSessionId ?: "new"}.txt")
+                                    showChatMenu = false; exportFormat = "txt"; exportChat.launch("hermes-chat-${state.activeSessionId ?: "new"}.txt")
+                                })
+                                DropdownMenuItem(text = { Text("Export chat (.md)") }, enabled = state.messages.isNotEmpty(), onClick = {
+                                    showChatMenu = false; exportFormat = "md"; exportChat.launch("hermes-chat-${state.activeSessionId ?: "new"}.md")
+                                })
+                                DropdownMenuItem(text = { Text("Export chat (.json)") }, enabled = state.messages.isNotEmpty(), onClick = {
+                                    showChatMenu = false; exportFormat = "json"; exportChat.launch("hermes-chat-${state.activeSessionId ?: "new"}.json")
                                 })
                             }
                         }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Connection settings") }
                     },
                 )
+                if (showConversationSearch) {
+                    OutlinedTextField(
+                        value = conversationQuery,
+                        onValueChange = { conversationQuery = it },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        label = { Text("Search this conversation") },
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = { if (conversationQuery.isNotBlank()) IconButton(onClick = { conversationQuery = "" }) { Icon(Icons.Default.Close, "Clear conversation search") } },
+                    )
+                }
+                }
             },
             bottomBar = { Composer(state, viewModel) },
             contentWindowInsets = WindowInsets.safeDrawing,
@@ -367,6 +415,11 @@ private fun ChatShell(state: HermesUiState, viewModel: HermesViewModel) {
             Conversation(
                 state = state,
                 viewModel = viewModel,
+                query = conversationQuery,
+                onSaveImage = { image ->
+                    imageToSave = image
+                    saveImage.launch("hermes-image-${System.currentTimeMillis()}.png")
+                },
                 modifier = Modifier.padding(padding),
             )
         }
@@ -526,6 +579,7 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val dot = when (badge) {
+            "New reply" -> Color(0xFF32A866)
             "Input needed" -> MaterialTheme.colorScheme.error
             "Working" -> MaterialTheme.colorScheme.primary
             else -> if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
@@ -578,12 +632,83 @@ private fun HermesUiState.timeline(): List<TimelineItem> = buildList {
     prompts.forEach { add(TimelinePrompt(it)) }
 }.sortedWith(compareBy<TimelineItem> { it.order }.thenBy { it.key })
 
+internal fun conversationSearchMatches(value: String, query: String): Boolean =
+    query.trim().isBlank() || value.contains(query.trim(), ignoreCase = true)
+
+private fun TimelineItem.searchText(): String = when (this) {
+    is TimelineMessage -> message.text
+    is TimelineTool -> "${tool.name}\n${tool.detail}"
+    is TimelineApproval -> "${approval.command}\n${approval.choices.joinToString(" ")}"
+    is TimelinePrompt -> "${prompt.question}\n${prompt.choices.joinToString(" ")}"
+}
+
+internal fun transcriptMarkdown(title: String, state: HermesUiState): String = buildString {
+    appendLine("# $title")
+    state.timeline().forEach { item ->
+        when (item) {
+            is TimelineMessage -> {
+                appendLine()
+                appendLine("## ${if (item.message.role.equals("user", true)) "You" else "Hermes"} · ${item.message.createdAt}")
+                appendLine()
+                appendLine(item.message.text)
+            }
+            is TimelineTool -> {
+                appendLine()
+                appendLine("## ${item.tool.name} · ${if (item.tool.complete) "done" else "running"}")
+                appendLine()
+                appendLine(item.tool.detail)
+            }
+            is TimelineApproval -> {
+                appendLine()
+                appendLine("## Approval")
+                appendLine()
+                appendLine(item.approval.command)
+            }
+            is TimelinePrompt -> {
+                appendLine()
+                appendLine("## Input needed")
+                appendLine()
+                appendLine(item.prompt.question)
+            }
+        }
+    }
+}
+
+internal fun transcriptJson(title: String, state: HermesUiState): String = JSONObject().apply {
+    put("title", title)
+    put("exported_at", Instant.now().toString())
+    put("items", JSONArray().apply {
+        state.timeline().forEach { item ->
+            put(JSONObject().apply {
+                when (item) {
+                    is TimelineMessage -> {
+                        put("kind", "message"); put("id", item.message.id); put("role", item.message.role)
+                        put("text", item.message.text); put("created_at", item.message.createdAt)
+                    }
+                    is TimelineTool -> {
+                        put("kind", "tool"); put("id", item.tool.id); put("name", item.tool.name)
+                        put("text", item.tool.detail); put("complete", item.tool.complete)
+                    }
+                    is TimelineApproval -> {
+                        put("kind", "approval"); put("id", item.approval.requestId); put("text", item.approval.command)
+                        put("choices", JSONArray(item.approval.choices)); put("resolved", item.approval.resolved)
+                    }
+                    is TimelinePrompt -> {
+                        put("kind", "prompt"); put("id", item.prompt.requestId); put("type", item.prompt.type)
+                        put("text", item.prompt.question); put("choices", JSONArray(item.prompt.choices)); put("resolved", item.prompt.resolved)
+                    }
+                }
+            })
+        }
+    })
+}.toString(2)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modifier: Modifier = Modifier) {
+private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, query: String, onSaveImage: (Bitmap) -> Unit, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val timeline = state.timeline()
+    val timeline = state.timeline().filter { conversationSearchMatches(it.searchText(), query) }
     val itemCount = timeline.size + if (state.attachments.isNotEmpty()) 1 else 0
     val canScrollToLatest by remember { derivedStateOf { listState.canScrollForward } }
     LaunchedEffect(timeline.lastOrNull()?.key, state.messages.lastOrNull()?.text, state.tools.lastOrNull()?.detail) {
@@ -607,20 +732,20 @@ private fun Conversation(state: HermesUiState, viewModel: HermesViewModel, modif
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (timeline.isEmpty()) {
-                item { EmptyConversation(statusText = state.statusText) }
+                item { if (query.isBlank()) EmptyConversation(statusText = state.statusText) else Text("No matching items in this conversation.", modifier = Modifier.padding(top = 48.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             timeline.forEachIndexed { index, entry ->
                 when (entry) {
                     is TimelineMessage -> {
                         val message = entry.message
-                        if (message.role.equals("user", ignoreCase = true)) {
+                        if (message.role.equals("user", ignoreCase = true) && query.isBlank()) {
                             stickyHeader(key = "sticky-${message.id}") {
                                 Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth()) {
                                     MessageBubble(message, onClick = { scope.launch { listState.scrollToItem(index) } }, maxLines = 4, collapsible = true)
                                 }
                             }
                         } else {
-                            item(key = entry.key) { MessageBubble(message, imageBaseUrl = state.endpointText) }
+                            item(key = entry.key) { MessageBubble(message, imageBaseUrl = state.endpointText, onSaveImage = onSaveImage) }
                         }
                     }
                     is TimelineTool -> item(key = entry.key) { ToolCard(entry.tool) }
@@ -666,7 +791,7 @@ private fun EmptyConversation(statusText: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false, imageBaseUrl: String = "") {
+private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLines: Int = Int.MAX_VALUE, collapsible: Boolean = false, imageBaseUrl: String = "", onSaveImage: (Bitmap) -> Unit = {}) {
     var expanded by remember(message.id) { mutableStateOf(false) }
     val user = message.role.equals("user", ignoreCase = true)
     val canExpand = collapsible && message.text.length > 240
@@ -702,7 +827,7 @@ private fun MessageBubble(message: ChatMessage, onClick: () -> Unit = {}, maxLin
                             SelectionContainer {
                                 Column(textModifier) {
                                     if (content.markdown.isNotBlank()) MarkdownText(content.markdown + if (message.isStreaming) "\n\n▌" else "")
-                                    content.imageUrls.forEach { GatewayImage(it, imageBaseUrl) }
+                                    content.imageUrls.forEach { GatewayImage(it, imageBaseUrl, onSaveImage) }
                                 }
                             }
                         }
@@ -780,15 +905,27 @@ internal fun gatewayImageUrl(source: String, endpoint: String): String? {
 }
 
 @Composable
-private fun GatewayImage(source: String, endpoint: String) {
+private fun GatewayImage(source: String, endpoint: String, onSaveImage: (Bitmap) -> Unit) {
     val url = gatewayImageUrl(source, endpoint) ?: return
     var bitmap by remember(url) { mutableStateOf<Bitmap?>(null) }
+    var fullscreen by remember(url) { mutableStateOf(false) }
     LaunchedEffect(url) { bitmap = withContext(Dispatchers.IO) { loadGatewayImage(url) } }
     bitmap?.let {
         Image(
             bitmap = it.asImageBitmap(), contentDescription = "Message image", contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).padding(top = 8.dp).clickable { fullscreen = true },
         )
+        if (fullscreen) Dialog(onDismissRequest = { fullscreen = false }) {
+            Surface(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Image(bitmap = it.asImageBitmap(), contentDescription = "Full size message image", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { onSaveImage(it) }) { Text("Save image") }
+                        TextButton(onClick = { fullscreen = false }) { Text("Close") }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -965,7 +1102,7 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
                             Row {
                                 TextButton(onClick = { viewModel.cancelQueued(item.id) }, enabled = !sending) { Text("Cancel") }
                                 if (paused) TextButton(onClick = { viewModel.resumeQueuedSession(item.sessionId) }, enabled = !sending) { Text("Resume") }
-                                TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text(if (item.error == null) "Send now" else "Retry") }
+                                TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && state.signedIn) { Text(if (item.error == null) "Send now" else "Retry") }
                             }
                         }
                     }

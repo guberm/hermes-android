@@ -19,12 +19,13 @@ Install subsequent releases over the existing app to retain sign-in and preferen
 ## Features
 
 - **Conversations:** create chats, load history with message times, stream replies, follow expandable Gateway reasoning and tool progress, and answer approval requests. Final replies appear after their reasoning and tool activity.
-- **Pins and search:** pin chats to the top and filter loaded titles and previews. Pins are saved locally for each Gateway.
+- **Pins and search:** pin chats to the top, filter loaded titles and previews, and search messages, reasoning, tools, approvals, and prompts inside the open conversation. Pins are saved locally for each Gateway.
 - **Models and reasoning:** use **Choose model** in the chat header to search Gateway models and set the current conversation's reasoning level.
 - **Steer and Queue:** guide a running response or save a message to send after it finishes.
-- **Notifications:** receive reply alerts and tap them to open the conversation.
-- **Copy and export:** long-press a message for **Copy message**; use **Chat actions** to copy or export the loaded transcript.
-- **Attachments:** stage images and files on the Gateway, up to 25 MiB per attachment.
+- **Cross-device activity:** while the app is visible it refreshes the Gateway session list every 25 seconds. A green dot marks a different chat with new Gateway activity; opening that chat clears the marker.
+- **Notifications:** receive reply alerts and tap them to open the conversation. A queued-message notification also offers **Cancel queued** and **Send now**.
+- **Copy and export:** long-press a message for **Copy message**; use **Chat actions** to copy or export the loaded transcript as `.txt`, `.md`, or `.json`.
+- **Attachments:** stage images and files on the Gateway, up to 25 MiB per attachment. Tap an image in a message for a full-size view and save it through Android's document picker.
 - **Appearance:** switch between Dark and Light in **Connection settings**. The preference is saved on this device.
 - **Layout:** content respects the status bar, display cutouts, navigation bar, and keyboard. Close the session drawer with its close button or system Back.
 
@@ -45,13 +46,13 @@ Pending messages are saved in private app storage for that Gateway. After a forc
 
 ## Chat actions and appearance
 
-Long-press a message and choose **Copy message**. There is no permanent Copy button. **Chat actions → Copy transcript** and **Export chat (.txt)** use the currently loaded conversation; export opens Android's document picker. **Refresh chats** reloads the session list. Drawer search filters loaded titles and previews, not all server messages.
+Long-press a message and choose **Copy message**. There is no permanent Copy button. **Chat actions → Copy transcript** and **Export chat** use the currently loaded conversation; exports open Android's document picker as `.txt`, `.md`, or `.json`. The Markdown and JSON exports preserve the loaded timeline, messages, tool output, approvals, prompts, and message timestamps. **Refresh chats** reloads the session list. Drawer search filters loaded titles and previews; the header search icon filters the open conversation.
 
 Use **Connection settings → Dark mode** to switch between Dark and Light. The selection survives restart, and status-bar icons follow the selected theme.
 
 ## Notifications
 
-Allow notifications when Android asks, or use **Connection settings → Notification settings**. Completion produces a reply notification with sound, subject to Android's channel and Do Not Disturb settings. The app deliberately does not show a persistent **Hermes is working** notification.
+Allow notifications when Android asks, or use **Connection settings → Notification settings**. Completion produces a reply notification with sound, subject to Android's channel and Do Not Disturb settings. When you queue a message, its notification keeps **Cancel queued** and **Send now** actions available. The app deliberately does not show a persistent **Hermes is working** notification.
 
 Notifications use the authenticated Gateway connection, not a separate push backend. Android may stop a background connection when the app is not active, so completion alerts are reliable while the app remains active but are not a background push guarantee. The app does not monitor every unrelated server conversation when stopped.
 
