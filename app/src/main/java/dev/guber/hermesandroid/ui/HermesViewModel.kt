@@ -30,6 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
@@ -42,6 +45,7 @@ data class HermesUiState(
     val signedIn: Boolean = false,
     val sessions: List<SessionSummary> = emptyList(),
     val pinnedSessions: Set<String> = emptySet(),
+    val unreadSessionIds: Set<String> = emptySet(),
     val activeSessionId: String? = null,
     val activeRuntimeSessionId: String? = null,
     val activeTitle: String = "New conversation",
@@ -72,6 +76,7 @@ data class HermesUiState(
 }
 
 internal fun sessionBadge(state: HermesUiState, sessionId: String): String? = when {
+    sessionId in state.unreadSessionIds -> "New reply"
     sessionId == state.activeSessionId && state.awaitingInput -> "Input needed"
     state.queuedPrompts.any { it.sessionId == sessionId } && sessionId in state.parkedQueueSessionIds -> "Queue paused"
     state.queuedPrompts.any { it.sessionId == sessionId } -> "Queued"
@@ -89,6 +94,11 @@ internal fun sessionSourceLabel(source: String): String = when (source.trim().lo
 internal fun visibleSessions(sessions: List<SessionSummary>, pins: Set<String>, query: String): List<SessionSummary> =
     sessions.filter { it.title.contains(query.trim(), ignoreCase = true) || it.preview.contains(query.trim(), ignoreCase = true) }
         .sortedByDescending { it.id in pins }
+
+internal fun sessionsWithNewActivity(previous: List<SessionSummary>, current: List<SessionSummary>): Set<String> {
+    val previousCounts = previous.associate { it.id to it.messageCount }
+    return current.filter { session -> session.messageCount > (previousCounts[session.id] ?: session.messageCount) }.mapTo(linkedSetOf()) { it.id }
+}
 
 internal fun insertSubmittedMessage(messages: List<ChatMessage>, afterId: String?, text: String): List<ChatMessage> =
     messages.toMutableList().apply {
@@ -149,8 +159,12 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private var pendingModel: GatewayModel? = null
     private var pendingReasoning: String? = null
     private var pendingOpenSession: String? = null
+    private var pendingQueuedActionId: String? = null
     private var restoredSessionId: String? = null
     private var manuallyDisconnected = false
+    private var sessionPoll: Job? = null
+    private var sessionsSynced = false
+    private var inForeground = false
     private var nextTimelineOrder = 100L
     private val draftsBySession = LinkedHashMap<String, String>()
 
@@ -163,6 +177,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     private fun draftPreferenceKey() = "drafts:${connection?.endpoint?.origin?.toString().orEmpty()}"
     private fun lastSessionPreferenceKey() = "last_session:${connection?.endpoint?.origin?.toString().orEmpty()}"
+    private fun unreadPreferenceKey() = "unread:${connection?.endpoint?.origin?.toString().orEmpty()}"
 
     private fun rememberActiveSession(sessionId: String?) {
         chatPreferences.edit().apply {
@@ -193,6 +208,22 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun stashActiveDraft() = rememberDraft(_state.value.activeSessionId, _state.value.draft)
+
+    private fun saveUnread() {
+        chatPreferences.edit().putStringSet(unreadPreferenceKey(), _state.value.unreadSessionIds).apply()
+    }
+
+    private fun markUnread(sessionId: String) {
+        if (sessionId.isBlank() || sessionId == _state.value.activeSessionId) return
+        _state.update { it.copy(unreadSessionIds = it.unreadSessionIds + sessionId) }
+        saveUnread()
+    }
+
+    private fun clearUnread(sessionId: String) {
+        if (sessionId.isBlank()) return
+        _state.update { it.copy(unreadSessionIds = it.unreadSessionIds - sessionId) }
+        saveUnread()
+    }
     init {
         _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
@@ -240,6 +271,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         connection = saved
         _state.update { it.copy(queuedPrompts = decodeQueue(chatPreferences.getString("queue:${saved.endpoint.origin}", "[]") ?: "[]")) }
         _state.update { it.copy(pinnedSessions = chatPreferences.getStringSet("pins:${saved.endpoint.origin}", emptySet()).orEmpty().toSet()) }
+        _state.update { it.copy(unreadSessionIds = chatPreferences.getStringSet(unreadPreferenceKey(), emptySet()).orEmpty().toSet()) }
         loadDrafts()
         viewModelScope.launch {
             var auth = saved.auth
@@ -306,8 +338,29 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun onForeground() {
+        inForeground = true
         if (_state.value.signedIn && !manuallyDisconnected && _state.value.status in setOf(ConnectionStatus.ERROR, ConnectionStatus.DISCONNECTED)) connectSaved()
-        else if (_state.value.status == ConnectionStatus.CONNECTED && _state.value.activeRuntimeSessionId != null) gateway.resumeActiveSession()
+        else if (_state.value.status == ConnectionStatus.CONNECTED) {
+            _state.value.activeRuntimeSessionId?.let { gateway.resumeActiveSession() }
+            startSessionPolling()
+        }
+    }
+
+    fun onBackground() {
+        inForeground = false
+        sessionPoll?.cancel()
+        sessionPoll = null
+    }
+
+    private fun startSessionPolling() {
+        if (!inForeground) return
+        if (sessionPoll?.isActive == true) return
+        sessionPoll = viewModelScope.launch {
+            while (isActive) {
+                delay(25_000)
+                if (_state.value.status == ConnectionStatus.CONNECTED) gateway.requestSessions()
+            }
+        }
     }
 
     fun loadModels() {
@@ -418,6 +471,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             rememberDraft(current.activeSessionId, "")
             _state.update { it.copy(draft = "", queuedPrompts = it.queuedPrompts + item, parkedQueueSessionIds = it.parkedQueueSessionIds - item.sessionId) }
             saveQueue()
+            notifications.showQueued(item)
             drainQueue()
             return
         }
@@ -454,12 +508,22 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             )
         }
         saveQueue()
+        notifications.cancelQueued(id)
     }
 
     fun sendQueuedNow(id: String) {
-        if (pendingFollowUp != null || _state.value.status != ConnectionStatus.CONNECTED) return
+        if (pendingFollowUp != null) return
         val item = _state.value.queuedPrompts.firstOrNull { it.id == id } ?: return
-        val runtime = item.runtimeId ?: return
+        if (_state.value.status != ConnectionStatus.CONNECTED || item.runtimeId == null || item.sessionId != _state.value.activeSessionId) {
+            pendingQueuedActionId = id
+            if (_state.value.status == ConnectionStatus.CONNECTED) gateway.resumeSession(item.sessionId)
+            else {
+                pendingOpenSession = item.sessionId
+                if (_state.value.signedIn && _state.value.status != ConnectionStatus.CONNECTING) connectSaved()
+            }
+            return
+        }
+        val runtime = item.runtimeId
         _state.update { it.copy(parkedQueueSessionIds = it.parkedQueueSessionIds - item.sessionId) }
         val idle = runtime in idleSessions || (runtime == _state.value.activeRuntimeSessionId && !_state.value.isSending)
         dispatchFollowUp(FollowUp(item.text, SessionIdentity(item.sessionId, runtime), item.title, queued = idle, queueId = id))
@@ -484,6 +548,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             if (accepted) {
                 _state.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { item -> item.id == id }) }
                 saveQueue()
+                notifications.cancelQueued(id)
             } else markQueueError(id, "Not sent. The agent did not accept the message.")
         }
         if (accepted && sent.queued) replies.begin(sent.session, sent.title, append = result.optString("status") == "queued")
@@ -600,6 +665,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 isSending = if (status == ConnectionStatus.ERROR) false else it.isSending,
             )
         }
+        if (status == ConnectionStatus.CONNECTED) startSessionPolling()
     }
 
     override fun onReady(replayEpoch: String?) {
@@ -607,7 +673,14 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     override fun onSessions(sessions: List<SessionSummary>) {
-        _state.update { it.copy(sessions = sessions, statusText = if (it.activeSessionId == null) "Connected" else it.statusText) }
+        val newActivity = if (sessionsSynced) sessionsWithNewActivity(_state.value.sessions, sessions).filterNot { it == _state.value.activeSessionId }.toSet() else emptySet()
+        sessionsSynced = true
+        _state.update { current -> current.copy(
+            sessions = sessions,
+            unreadSessionIds = current.unreadSessionIds + newActivity,
+            statusText = if (current.activeSessionId == null) "Connected" else current.statusText,
+        ) }
+        if (newActivity.isNotEmpty()) saveUnread()
         pendingOpenSession?.let { id -> pendingOpenSession = null; gateway.resumeSession(id) }
         restoredSessionId?.let { saved ->
             restoredSessionId = null
@@ -618,6 +691,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>, tools: List<ToolActivity>) {
         restoredSessionId = null
         rememberActiveSession(session.storedSessionId)
+        clearUnread(session.storedSessionId)
         replies.remap(session)
         resetTimelineOrder(messages, tools)
         val queued = pendingPrompt
@@ -643,6 +717,10 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             _state.update { it.copy(messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", queued, timelineOrder = reserveTimelineOrder())) }
             gateway.submitPrompt(session.runtimeSessionId, queued)
         }
+        pendingQueuedActionId?.let { id ->
+            pendingQueuedActionId = null
+            sendQueuedNow(id)
+        }
         if (_state.value.loadingModels) gateway.requestModels(session.runtimeSessionId)
     }
 
@@ -656,6 +734,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onEvent(params: JSONObject) {
         replies.receive(params)?.let { reply ->
+            markUnread(reply.sessionId)
             notifications.show(reply)
         }
         val type = params.optString("type")
@@ -665,6 +744,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         val completed = type in setOf("status.idle", "message.complete") && !params.optBoolean("replayed")
         if (completed) {
             idleSessions.add(sessionId)
+            gateway.requestSessions()
         }
         if (sessionId.isNotBlank() && sessionId != _state.value.activeRuntimeSessionId) {
             if (completed) drainQueue()

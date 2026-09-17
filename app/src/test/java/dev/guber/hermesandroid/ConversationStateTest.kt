@@ -12,6 +12,7 @@ import dev.guber.hermesandroid.ui.queueErrorMessage
 import dev.guber.hermesandroid.ui.restorableSessionId
 import dev.guber.hermesandroid.ui.sessionBadge
 import dev.guber.hermesandroid.ui.sessionSourceLabel
+import dev.guber.hermesandroid.ui.sessionsWithNewActivity
 import dev.guber.hermesandroid.gatewayImageUrl
 import dev.guber.hermesandroid.markdownAnnotatedString
 import dev.guber.hermesandroid.splitMarkdownImages
@@ -91,6 +92,44 @@ class ConversationStateTest {
         assertEquals("Queue paused", sessionBadge(working.copy(parkedQueueSessionIds = setOf("s1")), "s1"))
         assertEquals("Input needed", sessionBadge(working.copy(prompts = listOf(dev.guber.hermesandroid.data.InteractivePrompt("p1", "clarify.request", "Continue?"))), "s1"))
         assertEquals(null, sessionBadge(working, "s2"))
+    }
+
+    @Test
+    fun unreadReplyBadgeIsShownForAnotherChat() {
+        val state = HermesUiState(unreadSessionIds = setOf("s2"))
+        assertEquals("New reply", sessionBadge(state, "s2"))
+        assertEquals(null, sessionBadge(state, "s1"))
+    }
+
+    @Test
+    fun refreshedSessionListMarksOnlyChatsWithNewGatewayActivity() {
+        val previous = listOf(SessionSummary("same", "Same", "", 2), SessionSummary("changed", "Changed", "", 4))
+        val refreshed = listOf(SessionSummary("same", "Same", "", 2), SessionSummary("changed", "Changed", "", 5), SessionSummary("new", "New", "", 1))
+        assertEquals(setOf("changed"), sessionsWithNewActivity(previous, refreshed))
+    }
+
+    @Test
+    fun conversationSearchMatchesMessageAndToolText() {
+        assertTrue(conversationSearchMatches("Running terminal: ./gradlew test", "terminal"))
+        assertTrue(conversationSearchMatches("Approval required", "APPROVAL"))
+        assertFalse(conversationSearchMatches("Running terminal", "image"))
+    }
+
+    @Test
+    fun structuredExportsPreserveTimelineAndMessageMetadata() {
+        val state = HermesUiState(
+            messages = listOf(
+                ChatMessage("user", "user", "Hello", createdAt = "2026-09-17T10:00:00Z", timelineOrder = 100),
+                ChatMessage("answer", "assistant", "Done", createdAt = "2026-09-17T10:02:00Z", timelineOrder = 300),
+            ),
+            tools = listOf(ToolActivity("tool", "Terminal", "./gradlew test", complete = true, timelineOrder = 200)),
+        )
+        val markdown = transcriptMarkdown("Build chat", state)
+        assertTrue(markdown.indexOf("## You") < markdown.indexOf("## Terminal"))
+        assertTrue(markdown.indexOf("## Terminal") < markdown.indexOf("## Hermes"))
+        val items = JSONObject(transcriptJson("Build chat", state)).getJSONArray("items")
+        assertEquals(listOf("message", "tool", "message"), (0 until items.length()).map { items.getJSONObject(it).getString("kind") })
+        assertEquals("Hello", items.getJSONObject(0).getString("text"))
     }
 
     @Test
