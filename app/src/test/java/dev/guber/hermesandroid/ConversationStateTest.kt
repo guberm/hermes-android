@@ -28,12 +28,13 @@ class ConversationStateTest {
 
     @Test
     fun queuedPromptStaysBeforeAnAnswerThatArrivesBeforeAcknowledgement() {
-        val previous = ChatMessage("old", "assistant", "Previous response")
-        val earlyAnswer = ChatMessage("new", "assistant", "New response", true)
+        val previous = ChatMessage("old", "assistant", "Previous response", timelineOrder = 100)
+        val earlyAnswer = ChatMessage("new", "assistant", "New response", true, timelineOrder = 200)
         val ordered = insertSubmittedMessage(listOf(previous, earlyAnswer), "old", "Queued prompt")
         assertEquals(listOf("Previous response", "Queued prompt", "New response"), ordered.map { it.text })
         val alreadyComplete = insertSubmittedMessage(listOf(earlyAnswer.copy(isStreaming = false)), null, "First prompt")
         assertEquals(listOf("First prompt", "New response"), alreadyComplete.map { it.text })
+        assertEquals(listOf("Previous response", "Queued prompt", "New response"), ordered.sortedBy { it.timelineOrder }.map { it.text })
     }
 
     @Test

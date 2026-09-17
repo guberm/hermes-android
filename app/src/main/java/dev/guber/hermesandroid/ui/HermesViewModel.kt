@@ -66,7 +66,9 @@ data class HermesUiState(
     val changingModel: Boolean = false,
     val modelConfirmation: String? = null,
     val modelError: String? = null,
-)
+) {
+    val awaitingInput: Boolean get() = approvals.any { !it.resolved } || prompts.any { !it.resolved }
+}
 
 internal fun visibleSessions(sessions: List<SessionSummary>, pins: Set<String>, query: String): List<SessionSummary> =
     sessions.filter { it.title.contains(query.trim(), ignoreCase = true) || it.preview.contains(query.trim(), ignoreCase = true) }
@@ -75,7 +77,15 @@ internal fun visibleSessions(sessions: List<SessionSummary>, pins: Set<String>, 
 internal fun insertSubmittedMessage(messages: List<ChatMessage>, afterId: String?, text: String): List<ChatMessage> =
     messages.toMutableList().apply {
         val index = if (afterId == null) 0 else indexOfLast { it.id == afterId }.let { if (it < 0) size else it + 1 }
-        add(index, ChatMessage("local-${UUID.randomUUID()}", "user", text))
+        val before = getOrNull(index - 1)?.timelineOrder
+        val after = getOrNull(index)?.timelineOrder
+        val order = when {
+            before != null && after != null -> before + 1
+            before != null -> before + 1
+            after != null -> after - 1
+            else -> 0
+        }
+        add(index, ChatMessage("local-${UUID.randomUUID()}", "user", text, timelineOrder = order))
     }
 
 internal fun HermesUiState.finishTurn(statusText: String = this.statusText): HermesUiState =
@@ -121,6 +131,14 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private var pendingReasoning: String? = null
     private var pendingOpenSession: String? = null
     private var manuallyDisconnected = false
+    private var nextTimelineOrder = 100L
+
+    private fun reserveTimelineOrder(): Long = nextTimelineOrder.also { nextTimelineOrder += 100L }
+
+    private fun resetTimelineOrder(messages: List<ChatMessage>, tools: List<ToolActivity>) {
+        nextTimelineOrder = (messages.asSequence().map { it.timelineOrder } + tools.asSequence().map { it.timelineOrder })
+            .maxOrNull()?.plus(100L) ?: 100L
+    }
     init {
         _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
@@ -424,7 +442,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             it.copy(
                 draft = "",
                 isSending = true,
-                messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", text),
+                messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", text, timelineOrder = reserveTimelineOrder()),
             )
         }
         replies.begin(SessionIdentity(_state.value.activeSessionId ?: runtimeSessionId, runtimeSessionId), _state.value.activeTitle)
@@ -441,12 +459,19 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun chooseApproval(request: ApprovalRequest, choice: String) {
-        _state.update { it.copy(approvals = it.approvals.filterNot { item -> item.requestId == request.requestId }) }
+        if (request.submitting || request.resolved) return
+        _state.update { current -> current.copy(approvals = current.approvals.map { item ->
+            if (item.requestId == request.requestId) item.copy(submitting = true, selectedChoice = choice, error = null) else item
+        }, statusText = "Sending approval…") }
         gateway.respondApproval(request.requestId, choice)
     }
 
     fun respondPrompt(request: InteractivePrompt, answer: String) {
-        _state.update { it.copy(prompts = it.prompts.filterNot { item -> item.requestId == request.requestId }, statusText = "Response sent") }
+        if (request.submitting || request.resolved) return
+        val summary = if (request.type in setOf("sudo.request", "secret.request")) "Submitted securely" else answer.ifBlank { "Skipped" }
+        _state.update { current -> current.copy(prompts = current.prompts.map { item ->
+            if (item.requestId == request.requestId) item.copy(submitting = true, responseSummary = summary, error = null) else item
+        }, statusText = "Sending response…") }
         gateway.respondPrompt(request.requestId, request.type, answer)
     }
 
@@ -502,6 +527,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>, tools: List<ToolActivity>) {
         replies.remap(session)
+        resetTimelineOrder(messages, tools)
         val queued = pendingPrompt
         pendingPrompt = null
         _state.update {
@@ -521,7 +547,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         }
         if (!queued.isNullOrBlank() && !session.runtimeSessionId.isNullOrBlank()) {
             replies.begin(session, _state.value.activeTitle)
-            _state.update { it.copy(messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", queued)) }
+            _state.update { it.copy(messages = it.messages + ChatMessage("local-${UUID.randomUUID()}", "user", queued, timelineOrder = reserveTimelineOrder())) }
             gateway.submitPrompt(session.runtimeSessionId, queued)
         }
         if (_state.value.loadingModels) gateway.requestModels(session.runtimeSessionId)
@@ -554,8 +580,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         when (type) {
             "session.info" -> onSessionModel(payload.optionalString("model"), payload.optionalString("provider"), payload.optionalString("reasoning", "reasoning_effort"))
             "message.start" -> {
-                val role = payload.optString("role", "assistant")
-                _state.update { it.copy(isSending = true, messages = it.messages + ChatMessage("stream-${UUID.randomUUID()}", role, "", true)) }
+                _state.update { it.copy(isSending = true) }
             }
             "message.delta", "reasoning.delta", "thinking.delta", "message.interim" -> {
                 val delta = payload.optionalString("delta", "text", "content")
@@ -574,7 +599,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                         if (text.isBlank()) current.copy(isSending = false)
                         else current.copy(
                             isSending = false,
-                            messages = current.messages + ChatMessage("complete-${UUID.randomUUID()}", "assistant", text),
+                            messages = current.messages + ChatMessage("complete-${UUID.randomUUID()}", "assistant", text, timelineOrder = reserveTimelineOrder()),
                         )
                     }
                     else current.copy(
@@ -583,7 +608,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                             val previous = list[index]
                             list[index] = previous.copy(text = if (text.isBlank()) previous.text else text, isStreaming = false)
                         },
-                    )).finishTurn("Connected").copy(prompts = emptyList())
+                    )).finishTurn("Connected")
                 }
             }
             "tool.start", "tool.progress", "tool.generating", "tool.complete", "tool.failed" -> {
@@ -601,8 +626,12 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                     requestId = payload.optionalString("request_id", "id"),
                     command = payload.optionalString("command", "redacted_command").ifBlank { "Server requested approval" },
                     choices = choices,
+                    timelineOrder = reserveTimelineOrder(),
                 )
-                if (request.requestId.isNotBlank()) _state.update { it.copy(approvals = (it.approvals + request).distinctBy { item -> item.requestId }) }
+                if (request.requestId.isNotBlank()) _state.update { current ->
+                    if (current.approvals.any { it.requestId == request.requestId }) current
+                    else current.copy(approvals = current.approvals + request, statusText = "Approval required")
+                }
             }
             "clarify.request", "sudo.request", "secret.request", "terminal.read.request" -> {
                 val request = InteractivePrompt(
@@ -617,9 +646,13 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                     choices = payload.optJSONArray("choices")?.let { array ->
                         (0 until array.length()).mapNotNull { array.optString(it).ifBlank { null } }
                     }.orEmpty(),
+                    timelineOrder = reserveTimelineOrder(),
                 )
                 if (request.requestId.isNotBlank() && request.question.isNotBlank()) {
-                    _state.update { it.copy(prompts = (it.prompts + request).distinctBy { item -> item.requestId }, statusText = "Input required") }
+                    _state.update { current ->
+                        if (current.prompts.any { it.requestId == request.requestId }) current
+                        else current.copy(prompts = current.prompts + request, statusText = "Input required")
+                    }
                 }
             }
             "status.busy", "status.idle", "notification.show" -> {
@@ -641,9 +674,22 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     override fun onPendingApprovals(approvals: List<ApprovalRequest>) {
         if (approvals.isEmpty()) return
         _state.update { current ->
-            val merged = (current.approvals + approvals).distinctBy { it.requestId }
+            val existing = current.approvals.map { it.requestId }.toSet()
+            val merged = current.approvals + approvals.filterNot { it.requestId in existing }.map { it.copy(timelineOrder = reserveTimelineOrder()) }
             current.copy(approvals = merged, statusText = "Approval required")
         }
+    }
+
+    override fun onApprovalResponse(requestId: String) {
+        _state.update { current -> current.copy(approvals = current.approvals.map { item ->
+            if (item.requestId == requestId) item.copy(submitting = false, resolved = true, error = null) else item
+        }, statusText = "Approval sent") }
+    }
+
+    override fun onPromptResponse(requestId: String) {
+        _state.update { current -> current.copy(prompts = current.prompts.map { item ->
+            if (item.requestId == requestId) item.copy(submitting = false, resolved = true, error = null) else item
+        }, statusText = "Response sent") }
     }
 
     override fun onReplayGap(sessionId: String) {
@@ -658,6 +704,20 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onRpcError(method: String, error: GatewayError) {
         if (method == "prompt.pending" && error.code == -32601) return
+        if (method.startsWith("approval.respond:")) {
+            val requestId = method.substringAfter(':')
+            _state.update { current -> current.copy(approvals = current.approvals.map { item ->
+                if (item.requestId == requestId) item.copy(submitting = false, selectedChoice = null, error = error.message) else item
+            }, statusText = "Approval was not sent") }
+            return
+        }
+        if (method.startsWith("prompt.respond:")) {
+            val requestId = method.substringAfter(':')
+            _state.update { current -> current.copy(prompts = current.prompts.map { item ->
+                if (item.requestId == requestId) item.copy(submitting = false, responseSummary = null, error = error.message) else item
+            }, statusText = "Response was not sent") }
+            return
+        }
         if (method in setOf("prompt.queue", "session.steer")) {
             val message = queueErrorMessage(error.message)
             pendingFollowUp?.queueId?.let { markQueueError(it, message) }
@@ -679,15 +739,15 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private fun appendAssistantDelta(delta: String) {
         _state.update { current ->
             val index = current.messages.indexOfLast { it.role == "assistant" && it.isStreaming }
-            if (index < 0) current.copy(messages = current.messages + ChatMessage("stream-${UUID.randomUUID()}", "assistant", delta, true))
+            if (index < 0) current.copy(messages = current.messages + ChatMessage("stream-${UUID.randomUUID()}", "assistant", delta, true, timelineOrder = reserveTimelineOrder()))
             else current.copy(messages = current.messages.toMutableList().also { list -> list[index] = list[index].copy(text = list[index].text + delta) })
         }
     }
 
     private fun updateTool(id: String, name: String, detail: String, complete: Boolean) {
         _state.update { current ->
-            val existing = current.tools.indexOfFirst { it.id == id }
-            if (existing < 0) current.copy(tools = current.tools + ToolActivity(id, name, detail, complete))
+            val existing = if (id == "reasoning") current.tools.indexOfLast { it.name == name && !it.complete } else current.tools.indexOfFirst { it.id == id }
+            if (existing < 0) current.copy(tools = current.tools + ToolActivity(if (id == "reasoning") "reasoning-${UUID.randomUUID()}" else id, name, detail, complete, timelineOrder = reserveTimelineOrder()))
             else current.copy(tools = current.tools.toMutableList().also { list ->
                 list[existing] = mergeToolActivity(list[existing], detail, complete).copy(name = name)
             })
