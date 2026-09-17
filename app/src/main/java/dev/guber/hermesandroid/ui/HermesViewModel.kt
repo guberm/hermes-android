@@ -56,6 +56,7 @@ data class HermesUiState(
     val defaultQueue: Boolean = true,
     val darkMode: Boolean = true,
     val queuedPrompts: List<QueuedPrompt> = emptyList(),
+    val parkedQueueSessionIds: Set<String> = emptySet(),
     val sendingQueuedId: String? = null,
     val loginInProgress: Boolean = false,
     val models: List<GatewayModel> = emptyList(),
@@ -68,6 +69,21 @@ data class HermesUiState(
     val modelError: String? = null,
 ) {
     val awaitingInput: Boolean get() = approvals.any { !it.resolved } || prompts.any { !it.resolved }
+}
+
+internal fun sessionBadge(state: HermesUiState, sessionId: String): String? = when {
+    sessionId == state.activeSessionId && state.awaitingInput -> "Input needed"
+    state.queuedPrompts.any { it.sessionId == sessionId } && sessionId in state.parkedQueueSessionIds -> "Queue paused"
+    state.queuedPrompts.any { it.sessionId == sessionId } -> "Queued"
+    sessionId == state.activeSessionId && state.isSending -> "Working"
+    else -> null
+}
+
+internal fun sessionSourceLabel(source: String): String = when (source.trim().lowercase()) {
+    "android" -> "Android"
+    "desktop" -> "Desktop"
+    "tui" -> "Terminal"
+    else -> source.trim().replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
 }
 
 internal fun visibleSessions(sessions: List<SessionSummary>, pins: Set<String>, query: String): List<SessionSummary> =
@@ -108,7 +124,7 @@ internal fun mergeToolActivity(previous: ToolActivity, detail: String, complete:
 
 internal fun queueErrorMessage(error: String): String =
     if (error.contains("already has a live owner", ignoreCase = true)) {
-        "This chat is active in Hermes Desktop. Close it there, then tap Retry."
+        "This chat is active in another Hermes client. Update the Gateway to attach the existing session, then retry."
     } else error
 
 class HermesViewModel(application: Application) : AndroidViewModel(application), GatewayClient.Listener {
@@ -132,6 +148,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private var pendingOpenSession: String? = null
     private var manuallyDisconnected = false
     private var nextTimelineOrder = 100L
+    private val draftsBySession = LinkedHashMap<String, String>()
 
     private fun reserveTimelineOrder(): Long = nextTimelineOrder.also { nextTimelineOrder += 100L }
 
@@ -139,6 +156,32 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         nextTimelineOrder = (messages.asSequence().map { it.timelineOrder } + tools.asSequence().map { it.timelineOrder })
             .maxOrNull()?.plus(100L) ?: 100L
     }
+
+    private fun draftPreferenceKey() = "drafts:${connection?.endpoint?.origin?.toString().orEmpty()}"
+
+    private fun loadDrafts() {
+        draftsBySession.clear()
+        val raw = chatPreferences.getString(draftPreferenceKey(), "{}") ?: "{}"
+        runCatching {
+            val stored = JSONObject(raw)
+            val keys = stored.keys()
+            while (keys.hasNext()) {
+                val sessionId = keys.next()
+                stored.optString(sessionId).takeIf { it.isNotBlank() }?.let { draftsBySession[sessionId] = it }
+            }
+        }
+    }
+
+    private fun rememberDraft(sessionId: String?, text: String) {
+        val id = sessionId?.trim().orEmpty()
+        if (id.isBlank()) return
+        draftsBySession.remove(id)
+        if (text.isNotBlank()) draftsBySession[id] = text
+        while (draftsBySession.size > 50) draftsBySession.entries.iterator().run { next(); remove() }
+        chatPreferences.edit().putString(draftPreferenceKey(), JSONObject(draftsBySession as Map<*, *>).toString()).apply()
+    }
+
+    private fun stashActiveDraft() = rememberDraft(_state.value.activeSessionId, _state.value.draft)
     init {
         _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
@@ -185,6 +228,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         connection = saved
         _state.update { it.copy(queuedPrompts = decodeQueue(chatPreferences.getString("queue:${saved.endpoint.origin}", "[]") ?: "[]")) }
         _state.update { it.copy(pinnedSessions = chatPreferences.getStringSet("pins:${saved.endpoint.origin}", emptySet()).orEmpty().toSet()) }
+        loadDrafts()
         viewModelScope.launch {
             var auth = saved.auth
             if (auth.isExpired(System.currentTimeMillis() / 1000) && auth.refreshToken.isNotBlank()) {
@@ -327,17 +371,22 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             showError("Connect to the gateway before starting a session")
             return
         }
+        stashActiveDraft()
         pendingPrompt = null
         gateway.createSession()
     }
 
     fun resumeSession(session: SessionSummary) {
         if (_state.value.status != ConnectionStatus.CONNECTED) return
+        stashActiveDraft()
         _state.update { it.copy(activeTitle = session.title, statusText = "Resuming ${session.title}…") }
         gateway.resumeSession(session.id)
     }
 
-    fun updateDraft(value: String) = _state.update { it.copy(draft = value) }
+    fun updateDraft(value: String) {
+        rememberDraft(_state.value.activeSessionId, value)
+        _state.update { it.copy(draft = value) }
+    }
 
     fun setDefaultQueue(queued: Boolean) {
         chatPreferences.edit().putBoolean("default_queue", queued).apply()
@@ -352,7 +401,8 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         if (text.isBlank()) return
         if (queued) {
             val item = QueuedPrompt(UUID.randomUUID().toString(), current.activeSessionId ?: runtime, text, current.activeTitle, runtime)
-            _state.update { it.copy(draft = "", queuedPrompts = it.queuedPrompts + item) }
+            rememberDraft(current.activeSessionId, "")
+            _state.update { it.copy(draft = "", queuedPrompts = it.queuedPrompts + item, parkedQueueSessionIds = it.parkedQueueSessionIds - item.sessionId) }
             saveQueue()
             drainQueue()
             return
@@ -380,7 +430,15 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
 
     fun cancelQueued(id: String) {
         if (pendingFollowUp?.queueId == id) return
-        _state.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { item -> item.id == id }) }
+        _state.update { current ->
+            val removed = current.queuedPrompts.firstOrNull { it.id == id }
+            val remaining = current.queuedPrompts.filterNot { it.id == id }
+            current.copy(
+                queuedPrompts = remaining,
+                parkedQueueSessionIds = removed?.sessionId?.takeIf { session -> remaining.none { it.sessionId == session } }
+                    ?.let { current.parkedQueueSessionIds - it } ?: current.parkedQueueSessionIds,
+            )
+        }
         saveQueue()
     }
 
@@ -388,13 +446,19 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         if (pendingFollowUp != null || _state.value.status != ConnectionStatus.CONNECTED) return
         val item = _state.value.queuedPrompts.firstOrNull { it.id == id } ?: return
         val runtime = item.runtimeId ?: return
+        _state.update { it.copy(parkedQueueSessionIds = it.parkedQueueSessionIds - item.sessionId) }
         val idle = runtime in idleSessions || (runtime == _state.value.activeRuntimeSessionId && !_state.value.isSending)
         dispatchFollowUp(FollowUp(item.text, SessionIdentity(item.sessionId, runtime), item.title, queued = idle, queueId = id))
     }
 
+    fun resumeQueuedSession(sessionId: String) {
+        _state.update { it.copy(parkedQueueSessionIds = it.parkedQueueSessionIds - sessionId) }
+        drainQueue()
+    }
+
     private fun drainQueue() = viewModelScope.launch {
         if (pendingFollowUp != null || _state.value.status != ConnectionStatus.CONNECTED) return@launch
-        val item = _state.value.queuedPrompts.firstOrNull { it.runtimeId != null && it.runtimeId in idleSessions && it.error == null } ?: return@launch
+        val item = _state.value.queuedPrompts.firstOrNull { it.runtimeId != null && it.runtimeId in idleSessions && it.error == null && it.sessionId !in _state.value.parkedQueueSessionIds } ?: return@launch
         dispatchFollowUp(FollowUp(item.text, SessionIdentity(item.sessionId, item.runtimeId), item.title, true, item.id))
     }
 
@@ -409,6 +473,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             } else markQueueError(id, "Not sent. The agent did not accept the message.")
         }
         if (accepted && sent.queued) replies.begin(sent.session, sent.title, append = result.optString("status") == "queued")
+        if (accepted && sent.queueId == null) rememberDraft(sent.session.storedSessionId, "")
         _state.update { current ->
             val sameSession = current.activeRuntimeSessionId == sent.session.runtimeSessionId
             current.copy(sendingFollowUp = false, sendingQueuedId = null,
@@ -438,6 +503,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
             gateway.createSession()
             return
         }
+        rememberDraft(_state.value.activeSessionId, "")
         _state.update {
             it.copy(
                 draft = "",
@@ -452,7 +518,13 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     fun stopStreaming() {
         if (!_state.value.isSending) return
         if (gateway.interruptActiveSession()) {
-            _state.update { it.copy(statusText = "Stopping the current response…") }
+            _state.update { current ->
+                val active = current.activeSessionId
+                current.copy(
+                    statusText = "Stopping the current response…",
+                    parkedQueueSessionIds = if (active != null && current.queuedPrompts.any { it.sessionId == active }) current.parkedQueueSessionIds + active else current.parkedQueueSessionIds,
+                )
+            }
         } else {
             showError("No active gateway session is available to stop")
         }
@@ -540,6 +612,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
                 approvals = emptyList(),
                 prompts = emptyList(),
                 attachments = emptyList(),
+                draft = if (queued == null) draftsBySession[session.storedSessionId].orEmpty() else "",
                 isSending = queued != null,
                 activeTitle = it.sessions.firstOrNull { item -> item.id == session.storedSessionId }?.title ?: "New conversation",
                 statusText = "Connected",

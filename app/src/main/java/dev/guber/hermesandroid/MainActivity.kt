@@ -150,6 +150,8 @@ import java.time.format.DateTimeFormatter
 import dev.guber.hermesandroid.ui.HermesUiState
 import dev.guber.hermesandroid.ui.HermesViewModel
 import dev.guber.hermesandroid.ui.queueErrorMessage
+import dev.guber.hermesandroid.ui.sessionBadge
+import dev.guber.hermesandroid.ui.sessionSourceLabel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -503,8 +505,9 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
                 LazyColumn(Modifier.fillMaxWidth()) {
                     if (sessions.isEmpty()) item { Text("No matching chats", Modifier.padding(20.dp)) }
                     items(sessions, key = { it.id }) { session ->
+                        val badge = sessionBadge(state, session.id)
                         SessionRow(session, selected = session.id == state.activeSessionId, pinned = session.id in state.pinnedSessions,
-                            onPin = { onPin(session) }, onClick = { onSelect(session) })
+                            badge = badge, onPin = { onPin(session) }, onClick = { onSelect(session) })
                     }
                 }
             }
@@ -513,7 +516,7 @@ private fun SessionDrawer(state: HermesUiState, onNew: () -> Unit, onSelect: (Se
 }
 
 @Composable
-private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boolean, onPin: () -> Unit, onClick: () -> Unit) {
+private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boolean, badge: String?, onPin: () -> Unit, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -522,11 +525,18 @@ private fun SessionRow(session: SessionSummary, selected: Boolean, pinned: Boole
             .padding(horizontal = 20.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline))
+        val dot = when (badge) {
+            "Input needed" -> MaterialTheme.colorScheme.error
+            "Working" -> MaterialTheme.colorScheme.primary
+            else -> if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+        }
+        Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
             if (session.preview.isNotBlank()) Text(session.preview, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (session.source.isNotBlank()) Text("Started on ${sessionSourceLabel(session.source)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            badge?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = dot) }
         }
         if (session.messageCount > 0) Text(session.messageCount.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         IconButton(onClick = onPin) {
@@ -946,13 +956,15 @@ private fun Composer(state: HermesUiState, viewModel: HermesViewModel) {
             if (queued.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(queued, key = { it.id }) { item ->
                     val sending = state.sendingQueuedId == item.id
+                    val paused = item.sessionId in state.parkedQueueSessionIds
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(10.dp)) {
-                            Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text(if (sending) "SENDING…" else if (item.error != null) "NOT SENT" else if (paused) "QUEUE PAUSED" else "QUEUED", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Text(item.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
                             item.error?.let { Text(queueErrorMessage(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                             Row {
                                 TextButton(onClick = { viewModel.cancelQueued(item.id) }, enabled = !sending) { Text("Cancel") }
+                                if (paused) TextButton(onClick = { viewModel.resumeQueuedSession(item.sessionId) }, enabled = !sending) { Text("Resume") }
                                 TextButton(onClick = { viewModel.sendQueuedNow(item.id) }, enabled = !state.sendingFollowUp && item.runtimeId != null && state.status == ConnectionStatus.CONNECTED) { Text(if (item.error == null) "Send now" else "Retry") }
                             }
                         }

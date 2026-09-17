@@ -65,10 +65,13 @@ fun jsonRpcRequest(id: Long, method: String, params: JSONObject = JSONObject()):
         .put("params", params)
         .toString() + "\n"
 
-fun sessionResumeParams(sessionId: String): JSONObject = JSONObject().put("session_id", sessionId)
+fun sessionResumeParams(sessionId: String): JSONObject = JSONObject()
+    .put("session_id", sessionId)
+    .put("source", "android")
 
 fun sessionCreateParams(title: String? = null): JSONObject = JSONObject()
     .put("profile", "default")
+    .put("source", "android")
     .put("close_on_disconnect", false)
     .apply { if (!title.isNullOrBlank()) put("title", title.trim()) }
 

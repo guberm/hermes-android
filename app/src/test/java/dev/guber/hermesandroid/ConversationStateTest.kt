@@ -9,6 +9,8 @@ import dev.guber.hermesandroid.ui.finishTurn
 import dev.guber.hermesandroid.ui.insertSubmittedMessage
 import dev.guber.hermesandroid.ui.mergeToolActivity
 import dev.guber.hermesandroid.ui.queueErrorMessage
+import dev.guber.hermesandroid.ui.sessionBadge
+import dev.guber.hermesandroid.ui.sessionSourceLabel
 import dev.guber.hermesandroid.gatewayImageUrl
 import dev.guber.hermesandroid.markdownAnnotatedString
 import dev.guber.hermesandroid.splitMarkdownImages
@@ -76,8 +78,25 @@ class ConversationStateTest {
     @Test
     fun liveDesktopOwnerErrorGivesAUsefulRetryInstruction() {
         val raw = "Session 20260915_092822_062a8f already has a live owner (desktop, pid 1894627, lease age 12m)."
-        assertEquals("This chat is active in Hermes Desktop. Close it there, then tap Retry.", queueErrorMessage(raw))
+        assertEquals("This chat is active in another Hermes client. Update the Gateway to attach the existing session, then retry.", queueErrorMessage(raw))
         assertEquals("Network unavailable", queueErrorMessage("Network unavailable"))
+    }
+
+    @Test
+    fun sessionBadgesPrioritizeInputThenPausedOrPendingQueue() {
+        val queued = dev.guber.hermesandroid.data.QueuedPrompt("q1", "s1", "Later", "Chat")
+        val working = HermesUiState(activeSessionId = "s1", isSending = true, queuedPrompts = listOf(queued))
+        assertEquals("Queued", sessionBadge(working, "s1"))
+        assertEquals("Queue paused", sessionBadge(working.copy(parkedQueueSessionIds = setOf("s1")), "s1"))
+        assertEquals("Input needed", sessionBadge(working.copy(prompts = listOf(dev.guber.hermesandroid.data.InteractivePrompt("p1", "clarify.request", "Continue?"))), "s1"))
+        assertEquals(null, sessionBadge(working, "s2"))
+    }
+
+    @Test
+    fun sourceLabelsMakeCrossDeviceContinuationsClear() {
+        assertEquals("Desktop", sessionSourceLabel("desktop"))
+        assertEquals("Android", sessionSourceLabel("android"))
+        assertEquals("Telegram", sessionSourceLabel("telegram"))
     }
 
     @Test

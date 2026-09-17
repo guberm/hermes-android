@@ -63,6 +63,7 @@ data class SessionSummary(
     val preview: String,
     val messageCount: Int,
     val updatedLabel: String = "",
+    val source: String = "",
 )
 
 data class ChatMessage(

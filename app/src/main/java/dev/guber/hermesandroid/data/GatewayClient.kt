@@ -540,6 +540,7 @@ class GatewayClient(
                     preview = item.optionalString("preview", "last_message", "summary"),
                     messageCount = item.optInt("message_count", item.optInt("messageCount", 0)),
                     updatedLabel = item.optionalString("updated_at", "updated", "created_at"),
+                    source = item.optionalString("source", "platform"),
                 ),
             )
         }
