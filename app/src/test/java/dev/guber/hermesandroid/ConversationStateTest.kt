@@ -9,6 +9,7 @@ import dev.guber.hermesandroid.ui.finishTurn
 import dev.guber.hermesandroid.ui.insertSubmittedMessage
 import dev.guber.hermesandroid.ui.mergeToolActivity
 import dev.guber.hermesandroid.ui.queueErrorMessage
+import dev.guber.hermesandroid.ui.restorableSessionId
 import dev.guber.hermesandroid.ui.sessionBadge
 import dev.guber.hermesandroid.ui.sessionSourceLabel
 import dev.guber.hermesandroid.gatewayImageUrl
@@ -97,6 +98,14 @@ class ConversationStateTest {
         assertEquals("Desktop", sessionSourceLabel("desktop"))
         assertEquals("Android", sessionSourceLabel("android"))
         assertEquals("Telegram", sessionSourceLabel("telegram"))
+    }
+
+    @Test
+    fun lastOpenedSessionIsRestoredOnlyWhenTheGatewayStillListsIt() {
+        val sessions = listOf(SessionSummary("desktop-chat", "Desktop chat", "", 1))
+        assertEquals("desktop-chat", restorableSessionId("desktop-chat", sessions))
+        assertEquals(null, restorableSessionId("deleted-chat", sessions))
+        assertEquals(null, restorableSessionId(null, sessions))
     }
 
     @Test

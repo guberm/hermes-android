@@ -127,6 +127,9 @@ internal fun queueErrorMessage(error: String): String =
         "This chat is active in another Hermes client. Update the Gateway to attach the existing session, then retry."
     } else error
 
+internal fun restorableSessionId(savedSessionId: String?, sessions: List<SessionSummary>): String? =
+    savedSessionId?.takeIf { saved -> sessions.any { it.id == saved } }
+
 class HermesViewModel(application: Application) : AndroidViewModel(application), GatewayClient.Listener {
     private val store = SecureCredentialStore(application)
     private val authApi = AuthApi()
@@ -146,6 +149,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     private var pendingModel: GatewayModel? = null
     private var pendingReasoning: String? = null
     private var pendingOpenSession: String? = null
+    private var restoredSessionId: String? = null
     private var manuallyDisconnected = false
     private var nextTimelineOrder = 100L
     private val draftsBySession = LinkedHashMap<String, String>()
@@ -158,6 +162,13 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun draftPreferenceKey() = "drafts:${connection?.endpoint?.origin?.toString().orEmpty()}"
+    private fun lastSessionPreferenceKey() = "last_session:${connection?.endpoint?.origin?.toString().orEmpty()}"
+
+    private fun rememberActiveSession(sessionId: String?) {
+        chatPreferences.edit().apply {
+            if (sessionId.isNullOrBlank()) remove(lastSessionPreferenceKey()) else putString(lastSessionPreferenceKey(), sessionId)
+        }.apply()
+    }
 
     private fun loadDrafts() {
         draftsBySession.clear()
@@ -186,6 +197,7 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         _state.update { it.copy(defaultQueue = chatPreferences.getBoolean("default_queue", true), darkMode = chatPreferences.getBoolean("dark_mode", true)) }
         gateway.listener = this
         if (connection != null) {
+            restoredSessionId = chatPreferences.getString(lastSessionPreferenceKey(), null)
             _state.update { it.copy(signedIn = true, statusText = "Ready to connect") }
             connectSaved()
         }
@@ -254,6 +266,8 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
         manuallyDisconnected = true
         cancelBackgroundWait()
         pendingOpenSession = null
+        restoredSessionId = null
+        rememberActiveSession(null)
         gateway.setActiveSession(null)
         gateway.close()
         store.clear()
@@ -595,9 +609,15 @@ class HermesViewModel(application: Application) : AndroidViewModel(application),
     override fun onSessions(sessions: List<SessionSummary>) {
         _state.update { it.copy(sessions = sessions, statusText = if (it.activeSessionId == null) "Connected" else it.statusText) }
         pendingOpenSession?.let { id -> pendingOpenSession = null; gateway.resumeSession(id) }
+        restoredSessionId?.let { saved ->
+            restoredSessionId = null
+            restorableSessionId(saved, sessions)?.let(gateway::resumeSession) ?: rememberActiveSession(null)
+        }
     }
 
     override fun onSessionReady(session: SessionIdentity, messages: List<ChatMessage>, tools: List<ToolActivity>) {
+        restoredSessionId = null
+        rememberActiveSession(session.storedSessionId)
         replies.remap(session)
         resetTimelineOrder(messages, tools)
         val queued = pendingPrompt
